@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
-#import <Vision/Vision.h> // OCR nhận diện chữ trên màn hình
+#import <Vision/Vision.h>
 
 #pragma mark - OCR & DEEP ACCESSIBILITY ENGINE
 
@@ -12,7 +12,6 @@
 
 @implementation BruteforcePhoneExtractor
 
-// Regex lọc số điện thoại
 + (NSArray<NSString *> *)filterPhonesFromString:(NSString *)text {
     if (!text || text.length < 8) return @[];
     
@@ -20,7 +19,7 @@
     NSArray *patterns = @[
         @"(?:\\+84|0)[3|5|7|8|9][0-9\\s.-]{7,11}[0-9]",
         @"(?:\\+84|0)[3|5|7|8|9][0-9*\\s.-]{6,12}[0-9]",
-        @"[0-9]{10,11}" // Bắt chuỗi số liền 10-11 ký tự
+        @"[0-9]{10,11}"
     ];
 
     for (NSString *pat in patterns) {
@@ -41,10 +40,8 @@
     return results;
 }
 
-// 1. CHỤP MÀN HÌNH VÀ DÙNG APPLE VISION FRAMEWORK ĐỂ OCR TỪNG CHỮ
 + (void)extractPhonesViaVisionOCR:(void(^)(NSArray<NSString *> *phones, NSString *allText))completion {
     if (@available(iOS 13.0, *)) {
-        // Chụp snapshot màn hình chính của ứng dụng
         UIWindow *keyWin = nil;
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
             if ([s isKindOfClass:[UIWindowScene class]]) {
@@ -56,7 +53,18 @@
                 }
             }
         }
-        if (!keyWin) keyWin = [UIApplication sharedApplication].keyWindow;
+        
+        if (!keyWin) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            keyWin = [UIApplication sharedApplication].keyWindow;
+            #pragma clang diagnostic pop
+        }
+
+        if (!keyWin) {
+            if (completion) completion(@[], @"Không tìm thấy cửa sổ ứng dụng để chụp.");
+            return;
+        }
 
         UIGraphicsBeginImageContextWithOptions(keyWin.bounds.size, NO, 0.0);
         [keyWin drawViewHierarchyInRect:keyWin.bounds afterScreenUpdates:NO];
@@ -64,11 +72,10 @@
         UIGraphicsEndImageContext();
 
         if (!snapshot || !snapshot.CGImage) {
-            if (completion) completion(@[], @"Không chụp được màn hình.");
+            if (completion) completion(@[], @"Không chụp được ảnh màn hình.");
             return;
         }
 
-        // Tạo Vision Request nhận diện chữ
         VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull req, NSError * _Nullable error) {
             if (error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -99,18 +106,17 @@
         }];
 
         request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
-        request.usesLanguageCorrection = NO; // Tắt tự sửa từ để đọc chính xác số
+        request.usesLanguageCorrection = NO;
 
         VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:snapshot.CGImage options:@{}];
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
             [handler performRequests:@[request] error:nil];
         });
     } else {
-        if (completion) completion(@[], @"Yêu cầu iOS 13+ để chạy Vision OCR.");
+        if (completion) completion(@[], @"Yêu cầu iOS 13+ để chạy OCR.");
     }
 }
 
-// 2. QUÉT RAW SEMANTICS & ACCESSIBILITY ELEMENTS (DÀNH CHO FLUTTER / REACT NATIVE)
 + (void)deepScanAccessibilityInObject:(id)obj intoSet:(NSMutableSet<NSString *> *)set {
     if (!obj) return;
 
@@ -124,7 +130,6 @@
             if (v.length) [set addObject:v];
         }
 
-        // Quét CATextLayer
         if ([obj isKindOfClass:[CALayer class]]) {
             CALayer *layer = (CALayer *)obj;
             if ([layer respondsToSelector:@selector(string)]) {
@@ -136,7 +141,6 @@
             }
         }
 
-        // Quét View subviews & sub-elements
         if ([obj isKindOfClass:[UIView class]]) {
             UIView *v = (UIView *)obj;
             for (id el in v.accessibilityElements) {
@@ -152,7 +156,23 @@
 
 + (NSArray<NSString *> *)scanRawAccessibilityAndLayers {
     NSMutableSet<NSString *> *allRawTexts = [NSMutableSet set];
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+    NSArray<UIWindow *> *windows = @[];
+    
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                windows = [windows arrayByAddingObjectsFromArray:((UIWindowScene *)scene).windows];
+            }
+        }
+    }
+    if (windows.count == 0) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        windows = [UIApplication sharedApplication].windows;
+        #pragma clang diagnostic pop
+    }
+
+    for (UIWindow *w in windows) {
         if (![NSStringFromClass([w class]) containsString:@"InspectorOverlayWindow"]) {
             [self deepScanAccessibilityInObject:w intoSet:allRawTexts];
         }
@@ -184,7 +204,6 @@
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
 
-    // Bong bóng nổi
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.bubbleBtn.frame = CGRectMake(15, 120, 65, 65);
     self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.55 blue:1.0 alpha:0.92];
@@ -200,7 +219,6 @@
     [self.bubbleBtn addGestureRecognizer:panB];
     [self.view addSubview:self.bubbleBtn];
 
-    // Panel
     CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
     self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 70, screenW - 20, 420)];
     self.panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.96];
@@ -214,7 +232,6 @@
     UIPanGestureRecognizer *panP = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanPanel:)];
     [self.panel addGestureRecognizer:panP];
 
-    // Hàng nút điều khiển
     UIButton *ocrBtn = [self makeBtn:@"📸 OCR Màn Hình" color:[UIColor systemGreenColor] frame:CGRectMake(8, 10, 115, 32) action:@selector(runOCRScan)];
     UIButton *rawBtn = [self makeBtn:@"Semantics Quét" color:[UIColor systemOrangeColor] frame:CGRectMake(128, 10, 105, 32) action:@selector(runRawScan)];
     UIButton *copyBtn = [self makeBtn:@"Copy" color:[UIColor systemIndigoColor] frame:CGRectMake(238, 10, 50, 32) action:@selector(copyLog)];
@@ -276,9 +293,7 @@
 }
 
 - (void)runOCRScan {
-    self.statusLabel.text = @"Đang phân tích hình ảnh pixel màn hình (Vision OCR)...";
-    
-    // Tạm ẩn panel đi 0.05s để chụp ảnh giao diện phía sau không bị che
+    self.statusLabel.text = @"Đang quét chữ màn hình (Vision OCR)...";
     self.panel.alpha = 0.0;
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -288,7 +303,7 @@
             [res appendString:@"=== KẾT QUẢ QUÉT VISION OCR TỪNG CHỮ ===\n\n"];
             
             if (phones.count > 0) {
-                self.statusLabel.text = [NSString stringWithFormat:@"ĐÃ BẮT ĐƯỢC %lu SỐ ĐIỆN THOẠI!", (unsigned long)phones.count];
+                self.statusLabel.text = [NSString stringWithFormat:@"TÌM THẤY %lu SỐ ĐIỆN THOẠI!", (unsigned long)phones.count];
                 [res appendString:@"🎯 SỐ ĐIỆN THOẠI NHẬN DIỆN ĐƯỢC:\n"];
                 for (NSUInteger i = 0; i < phones.count; i++) {
                     [res appendFormat:@"  👉 [%lu]  %@\n", (unsigned long)(i + 1), phones[i]];
@@ -360,11 +375,12 @@ static void dylib_entry(void) {
                             break;
                         }
                     }
+                    if (scene) {
+                        gVisionWindow = [[InspectorOverlayWindow alloc] initWithWindowScene:scene];
+                    }
                 }
                 
-                if (@available(iOS 13.0, *) && scene) {
-                    gVisionWindow = [[InspectorOverlayWindow alloc] initWithWindowScene:scene];
-                } else {
+                if (!gVisionWindow) {
                     gVisionWindow = [[InspectorOverlayWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
                 }
                 
