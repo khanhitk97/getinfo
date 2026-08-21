@@ -159,7 +159,7 @@
 
 @end
 
-#pragma mark - UI BẢNG ĐIỀU KHIỂN DỒN VỀ PHÍA PHẢI
+#pragma mark - UI BẢNG ĐIỀU KHIỂN GỌN GÀNG (NEO SÁT PHẢI)
 
 @interface DriverControlVC : UIViewController
 @property (nonatomic, strong) UIButton *bubbleBtn;
@@ -178,14 +178,15 @@
 
     CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
 
-    // 1. Nút bong bóng dời sát mép phải (x = screenW - 65) để không che nút Back bên trái
+    // 1. Bong bóng nổi: Thu nhỏ kích thước và neo cố định ở góc phải
+    CGFloat bubbleSize = 50.0;
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.bubbleBtn.frame = CGRectMake(screenW - 65, 140, 54, 54);
+    self.bubbleBtn.frame = CGRectMake(screenW - bubbleSize - 12, 120, bubbleSize, bubbleSize);
     self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.95 green:0.38 blue:0.12 alpha:0.96];
     [self.bubbleBtn setTitle:@"🛵 Đơn" forState:UIControlStateNormal];
     [self.bubbleBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12.0];
-    self.bubbleBtn.layer.cornerRadius = 27;
+    self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
+    self.bubbleBtn.layer.cornerRadius = bubbleSize / 2.0;
     self.bubbleBtn.layer.borderWidth = 2;
     self.bubbleBtn.layer.borderColor = [UIColor whiteColor].CGColor;
     [self.bubbleBtn addTarget:self action:@selector(openPanel) forControlEvents:UIControlEventTouchUpInside];
@@ -194,9 +195,10 @@
     [self.bubbleBtn addGestureRecognizer:panB];
     [self.view addSubview:self.bubbleBtn];
 
-    // 2. Bảng Panel chính dạt về bên phải (chừa khoảng trống bên trái cho nút Back)
-    CGFloat panelW = screenW - 20;
-    self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 75, panelW, 190)];
+    // 2. Bảng Panel: Chiều rộng 270pt (chỉ chiếm ~70% màn hình), căn sát lề phải
+    CGFloat panelW = 270.0;
+    CGFloat panelX = screenW - panelW - 10.0; // Dạt hoàn toàn sang bên phải
+    self.panel = [[UIView alloc] initWithFrame:CGRectMake(panelX, 90, panelW, 185)];
     self.panel.backgroundColor = [[UIColor colorWithWhite:0.08 alpha:0.98] colorWithAlphaComponent:0.98];
     self.panel.layer.cornerRadius = 14;
     self.panel.layer.borderWidth = 1.2;
@@ -209,49 +211,49 @@
     [self.panel addGestureRecognizer:panP];
 
     // Tiêu đề & Nút đóng
-    UILabel *noteTitle = [[UILabel alloc] initWithFrame:CGRectMake(12, 10, self.panel.frame.size.width - 55, 16)];
-    noteTitle.text = @"📌 GHI CHÚ / DẶN DÒ SHIPPER:";
+    UILabel *noteTitle = [[UILabel alloc] initWithFrame:CGRectMake(10, 8, self.panel.frame.size.width - 45, 16)];
+    noteTitle.text = @"📌 GHI CHÚ KHÁCH:";
     noteTitle.textColor = [UIColor systemOrangeColor];
     noteTitle.font = [UIFont boldSystemFontOfSize:11.0];
     [self.panel addSubview:noteTitle];
 
     UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    closeBtn.frame = CGRectMake(self.panel.frame.size.width - 34, 6, 26, 26);
+    closeBtn.frame = CGRectMake(self.panel.frame.size.width - 30, 5, 24, 24);
     [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
     [closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     closeBtn.backgroundColor = [UIColor colorWithWhite:0.25 alpha:1.0];
-    closeBtn.layer.cornerRadius = 13;
+    closeBtn.layer.cornerRadius = 12;
     [closeBtn addTarget:self action:@selector(closePanel) forControlEvents:UIControlEventTouchUpInside];
     [self.panel addSubview:closeBtn];
 
-    // Banner Ghi chú
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 28, self.panel.frame.size.width - 20, 42)];
+    // Banner Ghi chú gọn
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(8, 26, self.panel.frame.size.width - 16, 40)];
     self.noteLabel.backgroundColor = [UIColor colorWithRed:0.2 green:0.14 blue:0.04 alpha:0.9];
     self.noteLabel.textColor = [UIColor yellowColor];
-    self.noteLabel.font = [UIFont boldSystemFontOfSize:12.0];
+    self.noteLabel.font = [UIFont boldSystemFontOfSize:11.5];
     self.noteLabel.numberOfLines = 2;
-    self.noteLabel.layer.cornerRadius = 7;
+    self.noteLabel.layer.cornerRadius = 6;
     self.noteLabel.layer.borderWidth = 1.0;
     self.noteLabel.layer.borderColor = [UIColor systemOrangeColor].CGColor;
     self.noteLabel.clipsToBounds = YES;
-    self.noteLabel.text = @" Đang kéo đơn hàng...";
+    self.noteLabel.text = @" Đang kéo đơn...";
     [self.panel addSubview:self.noteLabel];
 
     // Stack SĐT co giãn
-    self.phoneStackView = [[UIStackView alloc] initWithFrame:CGRectMake(10, 76, self.panel.frame.size.width - 20, 20)];
+    self.phoneStackView = [[UIStackView alloc] initWithFrame:CGRectMake(8, 72, self.panel.frame.size.width - 16, 20)];
     self.phoneStackView.axis = UILayoutConstraintAxisVertical;
     self.phoneStackView.distribution = UIStackViewDistributionFillEqually;
-    self.phoneStackView.spacing = 6;
+    self.phoneStackView.spacing = 5;
     [self.panel addSubview:self.phoneStackView];
 
-    // Nút Gửi ảnh cho quán
+    // Nút Chia sẻ ảnh
     self.shareBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.shareBtn.frame = CGRectMake(10, 102, self.panel.frame.size.width - 20, 42);
-    [self.shareBtn setTitle:@"📤 GỬI ẢNH MÓN CHO QUÁN LÀM TRƯỚC" forState:UIControlStateNormal];
+    self.shareBtn.frame = CGRectMake(8, 98, self.panel.frame.size.width - 16, 38);
+    [self.shareBtn setTitle:@"📤 GỬI ẢNH MÓN CHO QUÁN" forState:UIControlStateNormal];
     self.shareBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.48 blue:1.0 alpha:1.0];
     self.shareBtn.tintColor = [UIColor whiteColor];
-    self.shareBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12.5];
-    self.shareBtn.layer.cornerRadius = 8;
+    self.shareBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
+    self.shareBtn.layer.cornerRadius = 7;
     [self.shareBtn addTarget:self action:@selector(shareOrderImage) forControlEvents:UIControlEventTouchUpInside];
     [self.panel addSubview:self.shareBtn];
 }
@@ -292,31 +294,34 @@
             [v removeFromSuperview];
         }
 
+        // TÍNH TOÁN CHIỀU CAO CO GIÃN ĐỘNG
         CGFloat stackHeight = 0;
         if (phones.count > 0) {
             for (NSString *phone in phones) {
                 [self addPhoneRowWithNumber:phone];
             }
-            stackHeight = phones.count * 34.0 + (phones.count - 1) * 6.0;
+            stackHeight = phones.count * 32.0 + (phones.count - 1) * 5.0;
         } else {
-            UILabel *emptyLbl = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, self.phoneStackView.frame.size.width, 20)];
+            UILabel *emptyLbl = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, self.phoneStackView.frame.size.width, 18)];
             emptyLbl.text = @"(Không tìm thấy SĐT trong đơn)";
             emptyLbl.textColor = [UIColor lightGrayColor];
-            emptyLbl.font = [UIFont italicSystemFontOfSize:11];
+            emptyLbl.font = [UIFont italicSystemFontOfSize:10.5];
             [self.phoneStackView addArrangedSubview:emptyLbl];
-            stackHeight = 20.0;
+            stackHeight = 18.0;
         }
 
-        CGFloat startPhoneY = 76.0;
-        self.phoneStackView.frame = CGRectMake(10, startPhoneY, self.panel.frame.size.width - 20, stackHeight);
+        CGFloat startPhoneY = 72.0;
+        self.phoneStackView.frame = CGRectMake(8, startPhoneY, self.panel.frame.size.width - 16, stackHeight);
         
         CGFloat newShareY = startPhoneY + stackHeight + 8.0;
-        self.shareBtn.frame = CGRectMake(10, newShareY, self.panel.frame.size.width - 20, 42);
+        self.shareBtn.frame = CGRectMake(8, newShareY, self.panel.frame.size.width - 16, 38);
         
-        CGFloat totalHeight = newShareY + 42.0 + 10.0;
+        CGFloat totalHeight = newShareY + 38.0 + 8.0;
+        CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
         
         [UIView animateWithDuration:0.2 animations:^{
             CGRect frame = self.panel.frame;
+            frame.origin.x = screenW - frame.size.width - 10.0; // Luôn giữ sát lề phải
             frame.size.height = totalHeight;
             self.panel.frame = frame;
         }];
@@ -324,26 +329,28 @@
 }
 
 - (void)addPhoneRowWithNumber:(NSString *)phoneNumber {
-    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.phoneStackView.frame.size.width, 34)];
+    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.phoneStackView.frame.size.width, 32)];
     row.backgroundColor = [UIColor colorWithWhite:0.14 alpha:1.0];
-    row.layer.cornerRadius = 6;
+    row.layer.cornerRadius = 5;
 
+    // Số điện thoại (Chạm để sửa)
     UIButton *numBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    numBtn.frame = CGRectMake(8, 3, row.frame.size.width - 90, 28);
+    numBtn.frame = CGRectMake(6, 2, row.frame.size.width - 76, 28);
     [numBtn setTitle:[NSString stringWithFormat:@"📱 %@", phoneNumber] forState:UIControlStateNormal];
     [numBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    numBtn.titleLabel.font = [UIFont fontWithName:@"Menlo-Bold" size:12.5];
+    numBtn.titleLabel.font = [UIFont fontWithName:@"Menlo-Bold" size:11.5];
     numBtn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
     numBtn.accessibilityValue = phoneNumber;
     [numBtn addTarget:self action:@selector(editPhoneNumberPrompt:) forControlEvents:UIControlEventTouchUpInside];
     [row addSubview:numBtn];
 
+    // Nút Gọi thoại nhỏ gọn bên phải
     UIButton *callBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    callBtn.frame = CGRectMake(row.frame.size.width - 76, 4, 70, 26);
+    callBtn.frame = CGRectMake(row.frame.size.width - 66, 3, 62, 26);
     [callBtn setTitle:@"📞 Gọi" forState:UIControlStateNormal];
     callBtn.backgroundColor = [UIColor systemGreenColor];
     callBtn.tintColor = [UIColor whiteColor];
-    callBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
+    callBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.0];
     callBtn.layer.cornerRadius = 5;
     callBtn.accessibilityValue = phoneNumber;
     [callBtn addTarget:self action:@selector(makeDirectPhoneCall:) forControlEvents:UIControlEventTouchUpInside];
