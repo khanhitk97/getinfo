@@ -50,110 +50,113 @@
 
 @end
 
-#pragma mark - 2. SSL PINNING BYPASS ENGINE
+#pragma mark - 2. UNIVERSAL NETWORK & SOCKET HOOK
 
-@interface SSLBypassEngine : NSObject
-+ (void)enableSSLBypass;
+@interface UniversalNetworkLogger : NSObject
++ (void)startLogging;
++ (NSArray<NSString *> *)getLogs;
++ (void)clear;
++ (void)logRawData:(NSData *)data source:(NSString *)src;
++ (void)logString:(NSString *)str source:(NSString *)src;
 @end
 
-@implementation SSLBypassEngine
+static NSMutableArray<NSString *> *gNetLogs = nil;
 
-+ (void)enableSSLBypass {
+@implementation UniversalNetworkLogger
+
++ (void)startLogging {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // Swizzle xử lý Challenge xác thực TLS của NSURLSessionDelegate
-        Class sessionDelegateClass = NSClassFromString(@"NSURLSession");
-        if (sessionDelegateClass) {
-            SEL origSel = @selector(URLSession:didReceiveChallenge:completionHandler:);
-            SEL swizSel = @selector(custom_URLSession:didReceiveChallenge:completionHandler:);
-            
-            Method origMethod = class_getInstanceMethod(sessionDelegateClass, origSel);
-            Method swizMethod = class_getInstanceMethod([self class], swizSel);
-            
-            if (origMethod && swizMethod) {
-                method_exchangeImplementations(origMethod, swizMethod);
-            }
+        gNetLogs = [NSMutableArray array];
+
+        // 1. Swizzle NSURLSession init để ép qua URLProtocol hoặc hook delegate
+        Class connClass = NSClassFromString(@"__NSCFURLSessionConnection");
+        if (!connClass) connClass = NSClassFromString(@"NSURLSessionConnection");
+        if (connClass) {
+            SEL origSel = NSSelectorFromString(@"_didReceiveData:");
+            SEL swizSel = @selector(hook_didReceiveData:);
+            Method origM = class_getInstanceMethod(connClass, origSel);
+            Method swizM = class_getInstanceMethod([self class], swizSel);
+            if (origM && swizM) method_exchangeImplementations(origM, swizM);
         }
+
+        // 2. Hook WebSocket Delegate (SRWebSocket, Starscream, NSURLSessionWebSocketTask)
+        Class wsTaskClass = NSClassFromString(@"__NSCFURLSessionWebSocketTask");
+        if (wsTaskClass) {
+            SEL wsSendSel = NSSelectorFromString(@"sendMessage:completionHandler:");
+            SEL wsHookSel = @selector(hook_sendMessage:completionHandler:);
+            Method origWS = class_getInstanceMethod(wsTaskClass, wsSendSel);
+            Method swizWS = class_getInstanceMethod([self class], wsHookSel);
+            if (origWS && swizWS) method_exchangeImplementations(origWS, swizWS);
+        }
+
+        // 3. Hook NSNotificationCenter cho các sự kiện push nội bộ
+        [[NSNotificationCenter defaultCenter] addObserverForName:nil object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
+            NSString *name = note.name;
+            if ([name containsString:@"Order"] || [name containsString:@"order"] || [name containsString:@"Push"] || [name containsString:@"Socket"] || [name containsString:@"Message"]) {
+                NSString *log = [NSString stringWithFormat:@"[INTERNAL NOTIFICATION: %@] %@", name, note.userInfo ?: @"no-info"];
+                [UniversalNetworkLogger logString:log source:@"Notification"];
+            }
+        }];
     });
 }
 
-- (void)custom_URLSession:(NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable credential))completionHandler {
-    if ([challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
-        // Luôn chấp nhận chứng chỉ máy chủ để vượt qua kiểm tra SSL Pinning
-        SecTrustRef trust = challenge.protectionSpace.serverTrust;
-        NSURLCredential *cred = [NSURLCredential credentialForTrust:trust];
-        completionHandler(NSURLSessionAuthChallengeUseCredential, cred);
++ (void)logRawData:(NSData *)data source:(NSString *)src {
+    if (!data || data.length == 0) return;
+
+    // Thử parse JSON
+    NSError *err = nil;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
+    NSString *content = nil;
+    if (json) {
+        content = [NSString stringWithFormat:@"[%@ JSON] %@", src, json];
     } else {
-        [self custom_URLSession:session didReceiveChallenge:challenge completionHandler:completionHandler];
-    }
-}
-
-@end
-
-#pragma mark - 3. NETWORK API LOGGER & INTERCEPTOR
-
-@interface NetworkCaptureEngine : NSObject
-+ (void)startInterception;
-+ (NSArray<NSString *> *)getCapturedLogs;
-+ (void)clearLogs;
-@end
-
-static NSMutableArray<NSString *> *gNetworkLogs = nil;
-
-@implementation NetworkCaptureEngine
-
-+ (void)startInterception {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        gNetworkLogs = [NSMutableArray array];
-        
-        Class cls = NSClassFromString(@"__NSCFURLSessionConnection");
-        if (!cls) cls = NSClassFromString(@"NSURLSessionConnection");
-        if (!cls) return;
-
-        SEL origSel = NSSelectorFromString(@"_didReceiveData:");
-        SEL swizSel = @selector(custom_didReceiveData:);
-
-        Method origMethod = class_getInstanceMethod(cls, origSel);
-        Method swizMethod = class_getInstanceMethod([self class], swizSel);
-
-        if (origMethod && swizMethod) {
-            method_exchangeImplementations(origMethod, swizMethod);
-        }
-    });
-}
-
-- (void)custom_didReceiveData:(NSData *)data {
-    if (data.length > 0) {
-        NSError *err = nil;
-        id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
-        if (json) {
-            NSString *logEntry = [NSString stringWithFormat:@"[API JSON Response] %@\n", json];
-            @synchronized (gNetworkLogs) {
-                if (gNetworkLogs.count > 50) [gNetworkLogs removeObjectAtIndex:0];
-                [gNetworkLogs addObject:logEntry];
-            }
-            [FileLogger appendLog:logEntry];
+        // Fallback sang plain string (hỗ trợ cả text protobuf/custom stream)
+        NSString *str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (str && str.length > 0) {
+            content = [NSString stringWithFormat:@"[%@ RAW STRING] %@", src, str];
+        } else {
+            content = [NSString stringWithFormat:@"[%@ RAW HEX (%lu bytes)] %@", src, (unsigned long)data.length, [data description]];
         }
     }
-    [self custom_didReceiveData:data];
+
+    [self logString:content source:src];
 }
 
-+ (NSArray<NSString *> *)getCapturedLogs {
-    @synchronized (gNetworkLogs) {
-        return [gNetworkLogs copy];
++ (void)logString:(NSString *)str source:(NSString *)src {
+    if (!str || str.length == 0) return;
+    @synchronized (gNetLogs) {
+        if (gNetLogs.count > 100) [gNetLogs removeObjectAtIndex:0];
+        [gNetLogs addObject:str];
+    }
+    [FileLogger appendLog:str];
+}
+
+- (void)hook_didReceiveData:(NSData *)data {
+    [UniversalNetworkLogger logRawData:data source:@"HTTP/REST"];
+    [self hook_didReceiveData:data];
+}
+
+- (void)hook_sendMessage:(id)msg completionHandler:(id)handler {
+    [UniversalNetworkLogger logString:[NSString stringWithFormat:@"[WS OUTGOING] %@", [msg description]] source:@"WebSocket"];
+    [self hook_sendMessage:msg completionHandler:handler];
+}
+
++ (NSArray<NSString *> *)getLogs {
+    @synchronized (gNetLogs) {
+        return [gNetLogs copy];
     }
 }
 
-+ (void)clearLogs {
-    @synchronized (gNetworkLogs) {
-        [gNetworkLogs removeAllObjects];
++ (void)clear {
+    @synchronized (gNetLogs) {
+        [gNetLogs removeAllObjects];
     }
 }
 
 @end
 
-#pragma mark - 4. OCR & RUNTIME MEMORY DUMP ENGINE
+#pragma mark - 3. OCR & RUNTIME MEMORY DUMP ENGINE
 
 @interface AdvancedInspectionEngine : NSObject
 + (void)performScreenOCR:(void(^)(NSString *ocrResult))completion;
@@ -290,7 +293,7 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
 
 @end
 
-#pragma mark - 5. GIAO DIỆN ĐIỀU KHIỂN NỔI (ASSISTIVETOUCH UI)
+#pragma mark - 4. UI CONTROLLER
 
 @interface MultiToolInspectorVC : UIViewController <UISearchBarDelegate>
 @property (nonatomic, strong) UIButton *bubbleBtn;
@@ -307,7 +310,6 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
 
-    // Nút bong bóng nổi
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.bubbleBtn.frame = CGRectMake(15, 120, 60, 60);
     self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.5 blue:1.0 alpha:0.92];
@@ -323,7 +325,6 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
     [self.bubbleBtn addGestureRecognizer:panB];
     [self.view addSubview:self.bubbleBtn];
 
-    // Bảng Panel
     CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
     self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 65, screenW - 20, 450)];
     self.panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.96];
@@ -337,22 +338,20 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
     UIPanGestureRecognizer *panP = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanPanel:)];
     [self.panel addGestureRecognizer:panP];
 
-    // Hàng nút chức năng
-    UIButton *apiBtn = [self makeBtn:@"API Log" color:[UIColor systemBlueColor] frame:CGRectMake(6, 10, 65, 30) action:@selector(showAPILogs)];
+    UIButton *apiBtn = [self makeBtn:@"Network" color:[UIColor systemBlueColor] frame:CGRectMake(6, 10, 65, 30) action:@selector(showNetLogs)];
     UIButton *ocrBtn = [self makeBtn:@"OCR UI" color:[UIColor systemGreenColor] frame:CGRectMake(75, 10, 65, 30) action:@selector(runOCR)];
     UIButton *dumpBtn = [self makeBtn:@"Dump RAM" color:[UIColor systemOrangeColor] frame:CGRectMake(144, 10, 75, 30) action:@selector(runDump)];
-    UIButton *saveBtn = [self makeBtn:@"File Log" color:[UIColor systemIndigoColor] frame:CGRectMake(223, 10, 65, 30) action:@selector(showFilePath)];
+    UIButton *clrBtn = [self makeBtn:@"Clear" color:[UIColor systemGrayColor] frame:CGRectMake(223, 10, 50, 30) action:@selector(clearLogs)];
     UIButton *closeBtn = [self makeBtn:@"✕" color:[UIColor systemRedColor] frame:CGRectMake(self.panel.frame.size.width - 36, 10, 30, 30) action:@selector(closePanel)];
 
     [self.panel addSubview:apiBtn];
     [self.panel addSubview:ocrBtn];
     [self.panel addSubview:dumpBtn];
-    [self.panel addSubview:saveBtn];
+    [self.panel addSubview:clrBtn];
     [self.panel addSubview:closeBtn];
 
-    // Search Bar
     self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 44, self.panel.frame.size.width, 36)];
-    self.searchBar.placeholder = @"Lọc log (phone, token, order, address)...";
+    self.searchBar.placeholder = @"Lọc log (order, price, token, data)...";
     self.searchBar.searchBarStyle = UISearchBarStyleMinimal;
     self.searchBar.delegate = self;
     self.searchBar.barStyle = UIBarStyleBlack;
@@ -361,7 +360,7 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
     self.statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 82, self.panel.frame.size.width - 20, 18)];
     self.statusLabel.textColor = [UIColor yellowColor];
     self.statusLabel.font = [UIFont boldSystemFontOfSize:10.5];
-    self.statusLabel.text = @"SSL Pinning Bypass: ON | Auto Save: ON";
+    self.statusLabel.text = @"Universal Logger: REST / WS / Raw Stream ON";
     [self.panel addSubview:self.statusLabel];
 
     self.textView = [[UITextView alloc] initWithFrame:CGRectMake(8, 104, self.panel.frame.size.width - 16, 336)];
@@ -400,7 +399,7 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
 - (void)openPanel {
     self.bubbleBtn.hidden = YES;
     self.panel.hidden = NO;
-    [self showAPILogs];
+    [self showNetLogs];
 }
 
 - (void)closePanel {
@@ -408,15 +407,15 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
     self.bubbleBtn.hidden = NO;
 }
 
-- (void)showAPILogs {
-    NSArray *logs = [NetworkCaptureEngine getCapturedLogs];
-    NSMutableString *res = [NSMutableString stringWithFormat:@"=== GÓI TIN API BẮT ĐƯỢC (%lu) ===\n\n", (unsigned long)logs.count];
-    for (NSString *log in logs) [res appendString:log];
-    if (logs.count == 0) [res appendString:@"Chưa có gói tin JSON nào được gửi/nhận."];
+- (void)showNetLogs {
+    NSArray *logs = [UniversalNetworkLogger getLogs];
+    NSMutableString *res = [NSMutableString stringWithFormat:@"=== GÓI TIN BẮT ĐƯỢC (%lu) ===\n\n", (unsigned long)logs.count];
+    for (NSString *log in logs) [res appendFormat:@"%@\n---\n", log];
+    if (logs.count == 0) [res appendString:@"Chưa có gói tin nào. Đang lắng nghe REST, WS và Notifications..."];
     
     self.cachedLog = res;
     self.textView.text = res;
-    self.statusLabel.text = @"Đang xem API Logs.";
+    self.statusLabel.text = [NSString stringWithFormat:@"Đã bắt %lu gói tin.", (unsigned long)logs.count];
 }
 
 - (void)runOCR {
@@ -427,7 +426,7 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
             self.panel.alpha = 1.0;
             self.cachedLog = ocrResult;
             self.textView.text = ocrResult;
-            self.statusLabel.text = @"Đã quét và lưu log OCR vào file.";
+            self.statusLabel.text = @"Đã quét xong OCR.";
         }];
     });
 }
@@ -440,13 +439,12 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
     self.statusLabel.text = @"Đã dump RAM và lưu vào file.";
 }
 
-- (void)showFilePath {
-    NSString *path = [FileLogger getLogFilePath];
-    NSString *info = [NSString stringWithFormat:@"=== ĐƯỜNG DẪN FILE LOG TRÊN MÁY ===\n\n📄 File: pentest_logs.txt\n📁 Path:\n%@\n\n(Tất cả API response, OCR và RAM dump đều được tự động ghi nối tiếp vào file này)", path];
-    self.cachedLog = info;
-    self.textView.text = info;
-    [UIPasteboard generalPasteboard].string = path;
-    self.statusLabel.text = @"Đã sao chép đường dẫn file vào Clipboard!";
+- (void)clearLogs {
+    [UniversalNetworkLogger clear];
+    [FileLogger clearLogFile];
+    self.cachedLog = @"";
+    self.textView.text = @"Đã xóa toàn bộ logs.";
+    self.statusLabel.text = @"Logs cleared.";
 }
 
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
@@ -465,7 +463,7 @@ static NSMutableArray<NSString *> *gNetworkLogs = nil;
 
 @end
 
-#pragma mark - 6. ENTRY POINT & WINDOW HOOK
+#pragma mark - 5. ENTRY POINT
 
 @interface InspectorOverlayWindow : UIWindow
 @end
@@ -482,8 +480,7 @@ static InspectorOverlayWindow *gWindow = nil;
 
 __attribute__((constructor))
 static void dylib_main(void) {
-    [SSLBypassEngine enableSSLBypass];       // Tự động bật Bypass SSL Pinning
-    [NetworkCaptureEngine startInterception]; // Tự động bắt gói tin mạng
+    [UniversalNetworkLogger startLogging];
 
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
