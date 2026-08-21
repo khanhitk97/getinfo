@@ -1,4 +1,4 @@
-name: Build Pentest Dylib
+name: Build All-in-One Pentest Dylib
 
 on:
   push:
@@ -28,8 +28,14 @@ jobs:
                 -framework CoreGraphics \
                 -framework QuartzCore \
                 -framework Vision \
+                -framework Security \
                 -O2 \
                 ViewInspector.m -o ViewInspector.dylib
+
+      - name: Validate Binary
+        run: |
+          file ViewInspector.dylib
+          otool -L ViewInspector.dylib
 
       - name: Upload Binary Artifact
         uses: actions/upload-artifact@v4
