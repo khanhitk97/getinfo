@@ -2,15 +2,16 @@
 #import <objc/runtime.h>
 #import <Vision/Vision.h>
 
-#pragma mark - DATA EXTRACTION & CROP ENGINE
+#pragma mark - DATA & AUTO-SCROLL ENGINE
 
 @interface DriverDataExtractor : NSObject
 + (NSArray<NSString *> *)cleanAndExtractPhones:(NSString *)rawText;
-+ (void)scanScreenAndExtract:(void(^)(NSArray<NSString *> *phones, NSString *customerNote, UIImage *croppedOrderImage))completion;
++ (void)expandSheetAndCapture:(void(^)(NSArray<NSString *> *phones, NSString *customerNote, UIImage *croppedOrderImage))completion;
 @end
 
 @implementation DriverDataExtractor
 
+// 1. Tách sạch các SĐT (0975069335, 0394476559...)
 + (NSArray<NSString *> *)cleanAndExtractPhones:(NSString *)rawText {
     if (!rawText || rawText.length < 8) return @[];
     
@@ -51,14 +52,28 @@
     return validPhones;
 }
 
-// Hàm cắt ảnh chỉ lấy vùng chi tiết đơn hàng
-+ (UIImage *)cropOrderAreaOnly:(UIImage *)fullImage screenBounds:(CGRect)bounds {
+// 2. Kéo Bottom Sheet / ScrollView lên tối đa để lộ chi tiết món ăn
++ (void)forceExpandBottomSheetInView:(UIView *)view {
+    if (!view) return;
+    if ([view isKindOfClass:[UIScrollView class]]) {
+        UIScrollView *sv = (UIScrollView *)view;
+        if (sv.contentSize.height > sv.bounds.size.height) {
+            CGPoint bottomOffset = CGPointMake(0, sv.contentSize.height - sv.bounds.size.height + sv.adjustedContentInset.bottom);
+            [sv setContentOffset:bottomOffset animated:NO];
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        [self forceExpandBottomSheetInView:sub];
+    }
+}
+
+// 3. Cắt riêng phần Chi Tiết Đơn Hàng (Bỏ bản đồ, chỉ lấy từ đoạn đơn hàng xuống)
++ (UIImage *)cropOrderDetailOnly:(UIImage *)fullImage screenBounds:(CGRect)bounds {
     if (!fullImage) return nil;
     
-    // Bỏ phần đỉnh (18% chiều cao: pin, tai thỏ, header app)
-    // Lấy 72% chiều cao chứa toàn bộ món ăn, mã đơn, ghi chú
-    CGFloat cropY = bounds.size.height * 0.18;
-    CGFloat cropHeight = bounds.size.height * 0.72;
+    // Cắt từ 35% chiều cao (ngay dưới phần Gọi cho quán) xuống đáy
+    CGFloat cropY = bounds.size.height * 0.35;
+    CGFloat cropHeight = bounds.size.height * 0.55;
     CGRect cropRect = CGRectMake(0, cropY, bounds.size.width, cropHeight);
     
     CGFloat scale = fullImage.scale;
@@ -73,7 +88,7 @@
     return cropped;
 }
 
-+ (void)scanScreenAndExtract:(void(^)(NSArray<NSString *> *phones, NSString *customerNote, UIImage *croppedOrderImage))completion {
++ (void)expandSheetAndCapture:(void(^)(NSArray<NSString *> *phones, NSString *customerNote, UIImage *croppedOrderImage))completion {
     if (@available(iOS 13.0, *)) {
         UIWindow *mainWin = nil;
         for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
@@ -88,72 +103,76 @@
         }
         if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
 
-        UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
-        [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:NO];
-        UIImage *fullSnapshot = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
+        // Tự động kéo bung Bottom Sheet ra toàn màn hình
+        [self forceExpandBottomSheetInView:mainWin];
 
-        if (!fullSnapshot || !fullSnapshot.CGImage) {
-            if (completion) completion(@[], @"Không chụp được màn hình", nil);
-            return;
-        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
+            [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
+            UIImage *fullSnapshot = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
 
-        // Cắt riêng phần khúc đơn hàng
-        UIImage *orderSnippet = [self cropOrderAreaOnly:fullSnapshot screenBounds:mainWin.bounds];
-
-        VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
-            NSMutableArray<NSString *> *lines = [NSMutableArray array];
-            NSMutableSet<NSString *> *foundPhones = [NSMutableSet set];
-            NSString *detectedNote = @"(Không có ghi chú đặc biệt)";
-
-            for (VNRecognizedTextObservation *obs in request.results) {
-                VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-                if (top) {
-                    NSString *line = top.string;
-                    [lines addObject:line];
-
-                    NSArray *pList = [self cleanAndExtractPhones:line];
-                    for (NSString *p in pList) [foundPhones addObject:p];
-                }
+            if (!fullSnapshot || !fullSnapshot.CGImage) {
+                if (completion) completion(@[], @"Không chụp được màn hình", nil);
+                return;
             }
 
-            for (NSUInteger i = 0; i < lines.count; i++) {
-                NSString *l = lines[i];
-                NSString *lower = [l lowercaseString];
-                if ([lower containsString:@"ghi chú"] || [lower containsString:@"lưu ý"] || [lower containsString:@"lời nhắn"] || [lower containsString:@"dặn"]) {
-                    if (i + 1 < lines.count) {
-                        detectedNote = [NSString stringWithFormat:@"%@: %@", l, lines[i+1]];
-                    } else {
-                        detectedNote = l;
+            UIImage *orderDetailCrop = [self cropOrderDetailOnly:fullSnapshot screenBounds:mainWin.bounds];
+
+            VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
+                NSMutableArray<NSString *> *lines = [NSMutableArray array];
+                NSMutableSet<NSString *> *foundPhones = [NSMutableSet set];
+                NSString *detectedNote = @"Không có ghi chú";
+
+                for (VNRecognizedTextObservation *obs in request.results) {
+                    VNRecognizedText *top = [[obs topCandidates:1] firstObject];
+                    if (top) {
+                        NSString *line = top.string;
+                        [lines addObject:line];
+
+                        NSArray *pList = [self cleanAndExtractPhones:line];
+                        for (NSString *p in pList) [foundPhones addObject:p];
                     }
-                    break;
                 }
-            }
 
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (completion) completion([foundPhones allObjects], detectedNote, orderSnippet ?: fullSnapshot);
+                // Nhận diện phần ghi chú/dặn dò shipper
+                for (NSUInteger i = 0; i < lines.count; i++) {
+                    NSString *l = lines[i];
+                    NSString *lower = [l lowercaseString];
+                    if ([lower containsString:@"ghi chú"] || [lower containsString:@"dặn dò"] || [lower containsString:@"lưu ý"]) {
+                        if (i + 1 < lines.count) {
+                            detectedNote = lines[i+1];
+                        }
+                        break;
+                    }
+                }
+
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (completion) completion([foundPhones allObjects], detectedNote, orderDetailCrop ?: fullSnapshot);
+                });
+            }];
+
+            req.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+            req.usesLanguageCorrection = NO;
+
+            VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:fullSnapshot.CGImage options:@{}];
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+                [handler performRequests:@[req] error:nil];
             });
-        }];
-
-        req.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
-        req.usesLanguageCorrection = NO;
-
-        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:fullSnapshot.CGImage options:@{}];
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-            [handler performRequests:@[req] error:nil];
         });
     }
 }
 
 @end
 
-#pragma mark - UI BẢNG ĐIỀU KHIỂN DÀNH CHO TÀI XẾ
+#pragma mark - UI BẢNG ĐIỀU KHIỂN CO GIÃN ĐỘNG (AUTO-FITTING UI)
 
 @interface DriverControlVC : UIViewController
 @property (nonatomic, strong) UIButton *bubbleBtn;
 @property (nonatomic, strong) UIView *panel;
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIStackView *phoneStackView;
+@property (nonatomic, strong) UIButton *shareBtn;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @end
 
@@ -163,14 +182,14 @@
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
 
-    // Nút tròn nổi
+    // Bong bóng nổi
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.bubbleBtn.frame = CGRectMake(15, 120, 60, 60);
-    self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.95 green:0.40 blue:0.13 alpha:0.95];
+    self.bubbleBtn.frame = CGRectMake(12, 110, 58, 58);
+    self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.95 green:0.38 blue:0.12 alpha:0.96];
     [self.bubbleBtn setTitle:@"🛵 Đơn" forState:UIControlStateNormal];
     [self.bubbleBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
-    self.bubbleBtn.layer.cornerRadius = 30;
+    self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12.5];
+    self.bubbleBtn.layer.cornerRadius = 29;
     self.bubbleBtn.layer.borderWidth = 2;
     self.bubbleBtn.layer.borderColor = [UIColor whiteColor].CGColor;
     [self.bubbleBtn addTarget:self action:@selector(openPanel) forControlEvents:UIControlEventTouchUpInside];
@@ -179,11 +198,11 @@
     [self.bubbleBtn addGestureRecognizer:panB];
     [self.view addSubview:self.bubbleBtn];
 
-    // Khung Panel
+    // Panel chính
     CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-    self.panel = [[UIView alloc] initWithFrame:CGRectMake(12, 70, screenW - 24, 340)];
-    self.panel.backgroundColor = [[UIColor colorWithWhite:0.06 alpha:0.97] colorWithAlphaComponent:0.97];
-    self.panel.layer.cornerRadius = 16;
+    self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 65, screenW - 20, 190)];
+    self.panel.backgroundColor = [[UIColor colorWithWhite:0.08 alpha:0.98] colorWithAlphaComponent:0.98];
+    self.panel.layer.cornerRadius = 14;
     self.panel.layer.borderWidth = 1.2;
     self.panel.layer.borderColor = [UIColor colorWithWhite:0.3 alpha:1.0].CGColor;
     self.panel.clipsToBounds = YES;
@@ -193,57 +212,52 @@
     UIPanGestureRecognizer *panP = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanPanel:)];
     [self.panel addGestureRecognizer:panP];
 
-    // 1. BANNER GHI CHÚ CỦA KHÁCH Ở ĐẦU TRANG
-    UILabel *noteTitle = [[UILabel alloc] initWithFrame:CGRectMake(12, 10, self.panel.frame.size.width - 60, 18)];
-    noteTitle.text = @"📌 GHI CHÚ CỦA KHÁCH:";
+    // 1. Tiêu đề & Nút đóng
+    UILabel *noteTitle = [[UILabel alloc] initWithFrame:CGRectMake(12, 10, self.panel.frame.size.width - 55, 16)];
+    noteTitle.text = @"📌 GHI CHÚ / DẶN DÒ SHIPPER:";
     noteTitle.textColor = [UIColor systemOrangeColor];
-    noteTitle.font = [UIFont boldSystemFontOfSize:11.5];
+    noteTitle.font = [UIFont boldSystemFontOfSize:11.0];
     [self.panel addSubview:noteTitle];
 
     UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    closeBtn.frame = CGRectMake(self.panel.frame.size.width - 38, 8, 28, 28);
+    closeBtn.frame = CGRectMake(self.panel.frame.size.width - 34, 6, 26, 26);
     [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
     [closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    closeBtn.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1.0];
-    closeBtn.layer.cornerRadius = 14;
+    closeBtn.backgroundColor = [UIColor colorWithWhite:0.25 alpha:1.0];
+    closeBtn.layer.cornerRadius = 13;
     [closeBtn addTarget:self action:@selector(closePanel) forControlEvents:UIControlEventTouchUpInside];
     [self.panel addSubview:closeBtn];
 
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 32, self.panel.frame.size.width - 24, 48)];
-    self.noteLabel.backgroundColor = [UIColor colorWithRed:0.2 green:0.15 blue:0.05 alpha:0.9];
+    // Banner Ghi chú đưa lên đầu
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 28, self.panel.frame.size.width - 20, 42)];
+    self.noteLabel.backgroundColor = [UIColor colorWithRed:0.2 green:0.14 blue:0.04 alpha:0.9];
     self.noteLabel.textColor = [UIColor yellowColor];
-    self.noteLabel.font = [UIFont boldSystemFontOfSize:12.5];
+    self.noteLabel.font = [UIFont boldSystemFontOfSize:12.0];
     self.noteLabel.numberOfLines = 2;
-    self.noteLabel.layer.cornerRadius = 8;
+    self.noteLabel.layer.cornerRadius = 7;
     self.noteLabel.layer.borderWidth = 1.0;
     self.noteLabel.layer.borderColor = [UIColor systemOrangeColor].CGColor;
     self.noteLabel.clipsToBounds = YES;
-    self.noteLabel.text = @" Đang quét đơn...";
+    self.noteLabel.text = @" Đang kéo đơn hàng...";
     [self.panel addSubview:self.noteLabel];
 
-    // 2. KHU VỰC SỐ ĐIỆN THOẠI
-    UILabel *phoneTitle = [[UILabel alloc] initWithFrame:CGRectMake(12, 88, self.panel.frame.size.width - 24, 18)];
-    phoneTitle.text = @"📞 SỐ ĐIỆN THOẠI (Chạm SĐT để sửa):";
-    phoneTitle.textColor = [UIColor systemGreenColor];
-    phoneTitle.font = [UIFont boldSystemFontOfSize:11.0];
-    [self.panel addSubview:phoneTitle];
-
-    self.phoneStackView = [[UIStackView alloc] initWithFrame:CGRectMake(12, 108, self.panel.frame.size.width - 24, 150)];
+    // 2. Stack SĐT co giãn động
+    self.phoneStackView = [[UIStackView alloc] initWithFrame:CGRectMake(10, 76, self.panel.frame.size.width - 20, 20)];
     self.phoneStackView.axis = UILayoutConstraintAxisVertical;
     self.phoneStackView.distribution = UIStackViewDistributionFillEqually;
-    self.phoneStackView.spacing = 8;
+    self.phoneStackView.spacing = 6;
     [self.panel addSubview:self.phoneStackView];
 
-    // 3. NÚT CHIA SẺ ĐƠN HÀNG DUY NHẤT
-    UIButton *shareBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    shareBtn.frame = CGRectMake(12, 270, self.panel.frame.size.width - 24, 48);
-    [shareBtn setTitle:@"📤 CHIA SẺ ẢNH ĐƠN CHO QUÁN (Zalo/Tin nhắn)" forState:UIControlStateNormal];
-    shareBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.48 blue:1.0 alpha:1.0];
-    shareBtn.tintColor = [UIColor whiteColor];
-    shareBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13.5];
-    shareBtn.layer.cornerRadius = 10;
-    [shareBtn addTarget:self action:@selector(shareOrderImage) forControlEvents:UIControlEventTouchUpInside];
-    [self.panel addSubview:shareBtn];
+    // 3. Nút Chia sẻ ảnh
+    self.shareBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.shareBtn.frame = CGRectMake(10, 102, self.panel.frame.size.width - 20, 42);
+    [self.shareBtn setTitle:@"📤 GỬI ẢNH MÓN CHO QUÁN LÀM TRƯỚC" forState:UIControlStateNormal];
+    self.shareBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.48 blue:1.0 alpha:1.0];
+    self.shareBtn.tintColor = [UIColor whiteColor];
+    self.shareBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12.5];
+    self.shareBtn.layer.cornerRadius = 8;
+    [self.shareBtn addTarget:self action:@selector(shareOrderImage) forControlEvents:UIControlEventTouchUpInside];
+    [self.panel addSubview:self.shareBtn];
 }
 
 - (void)onPanBubble:(UIPanGestureRecognizer *)p {
@@ -272,55 +286,73 @@
 - (void)refreshOrderData {
     self.panel.alpha = 0.0;
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [DriverDataExtractor scanScreenAndExtract:^(NSArray<NSString *> *phones, NSString *customerNote, UIImage *croppedOrderImage) {
-            self.panel.alpha = 1.0;
-            self.orderImageToSend = croppedOrderImage;
+    [DriverDataExtractor expandSheetAndCapture:^(NSArray<NSString *> *phones, NSString *customerNote, UIImage *croppedOrderImage) {
+        self.panel.alpha = 1.0;
+        self.orderImageToSend = croppedOrderImage;
+        self.noteLabel.text = [NSString stringWithFormat:@"  %@", customerNote];
 
-            self.noteLabel.text = [NSString stringWithFormat:@"  %@", customerNote];
+        // Xóa dòng SĐT cũ
+        for (UIView *v in self.phoneStackView.arrangedSubviews) {
+            [self.phoneStackView removeArrangedSubview:v];
+            [v removeFromSuperview];
+        }
 
-            for (UIView *v in self.phoneStackView.arrangedSubviews) {
-                [self.phoneStackView removeArrangedSubview:v];
-                [v removeFromSuperview];
+        // TÍNH TOÁN CHIỀU CAO CO GIÃN TỰ ĐỘNG
+        CGFloat stackHeight = 0;
+        if (phones.count > 0) {
+            for (NSString *phone in phones) {
+                [self addPhoneRowWithNumber:phone];
             }
+            stackHeight = phones.count * 34.0 + (phones.count - 1) * 6.0;
+        } else {
+            UILabel *emptyLbl = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, self.phoneStackView.frame.size.width, 20)];
+            emptyLbl.text = @"(Không tìm thấy SĐT trong đơn)";
+            emptyLbl.textColor = [UIColor lightGrayColor];
+            emptyLbl.font = [UIFont italicSystemFontOfSize:11];
+            [self.phoneStackView addArrangedSubview:emptyLbl];
+            stackHeight = 20.0;
+        }
 
-            if (phones.count > 0) {
-                for (NSString *phone in phones) {
-                    [self addPhoneRowWithNumber:phone];
-                }
-            } else {
-                UILabel *emptyLbl = [[UILabel alloc] init];
-                emptyLbl.text = @"Không phát hiện SĐT nào trên màn hình.";
-                emptyLbl.textColor = [UIColor lightGrayColor];
-                emptyLbl.font = [UIFont italicSystemFontOfSize:11];
-                [self.phoneStackView addArrangedSubview:emptyLbl];
-            }
+        CGFloat startPhoneY = 76.0;
+        self.phoneStackView.frame = CGRectMake(10, startPhoneY, self.panel.frame.size.width - 20, stackHeight);
+        
+        CGFloat newShareY = startPhoneY + stackHeight + 8.0;
+        self.shareBtn.frame = CGRectMake(10, newShareY, self.panel.frame.size.width - 20, 42);
+        
+        CGFloat totalHeight = newShareY + 42.0 + 10.0;
+        
+        [UIView animateWithDuration:0.2 animations:^{
+            CGRect frame = self.panel.frame;
+            frame.size.height = totalHeight;
+            self.panel.frame = frame;
         }];
-    });
+    }];
 }
 
 - (void)addPhoneRowWithNumber:(NSString *)phoneNumber {
-    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.phoneStackView.frame.size.width, 36)];
-    row.backgroundColor = [UIColor colorWithWhite:0.12 alpha:1.0];
+    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.phoneStackView.frame.size.width, 34)];
+    row.backgroundColor = [UIColor colorWithWhite:0.14 alpha:1.0];
     row.layer.cornerRadius = 6;
 
+    // Số điện thoại (Chạm để sửa)
     UIButton *numBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    numBtn.frame = CGRectMake(8, 4, row.frame.size.width - 95, 28);
+    numBtn.frame = CGRectMake(8, 3, row.frame.size.width - 90, 28);
     [numBtn setTitle:[NSString stringWithFormat:@"📱 %@", phoneNumber] forState:UIControlStateNormal];
     [numBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    numBtn.titleLabel.font = [UIFont fontWithName:@"Menlo-Bold" size:13];
+    numBtn.titleLabel.font = [UIFont fontWithName:@"Menlo-Bold" size:12.5];
     numBtn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
     numBtn.accessibilityValue = phoneNumber;
     [numBtn addTarget:self action:@selector(editPhoneNumberPrompt:) forControlEvents:UIControlEventTouchUpInside];
     [row addSubview:numBtn];
 
+    // Nút Gọi bên phải
     UIButton *callBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    callBtn.frame = CGRectMake(row.frame.size.width - 82, 4, 75, 28);
+    callBtn.frame = CGRectMake(row.frame.size.width - 76, 4, 70, 26);
     [callBtn setTitle:@"📞 Gọi" forState:UIControlStateNormal];
     callBtn.backgroundColor = [UIColor systemGreenColor];
     callBtn.tintColor = [UIColor whiteColor];
-    callBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    callBtn.layer.cornerRadius = 6;
+    callBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
+    callBtn.layer.cornerRadius = 5;
     callBtn.accessibilityValue = phoneNumber;
     [callBtn addTarget:self action:@selector(makeDirectPhoneCall:) forControlEvents:UIControlEventTouchUpInside];
     [row addSubview:callBtn];
@@ -330,8 +362,8 @@
 
 - (void)editPhoneNumberPrompt:(UIButton *)btn {
     NSString *currentPhone = btn.accessibilityValue;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chỉnh sửa SĐT"
-                                                                   message:@"Sửa lại số điện thoại trước khi gọi:"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Sửa Số Điện Thoại"
+                                                                   message:@"Chỉnh sửa lại số trước khi gọi:"
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
         textField.text = currentPhone;
