@@ -1,245 +1,371 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
 
-@interface InspectorViewController : UIViewController
-@property (nonatomic, strong) UITextView *textView;
-@property (nonatomic, strong) UIView *panelContainer;
-@property (nonatomic, assign) BOOL isMinimized;
+#pragma mark - DATA STRUCTURE & EXTRACTION
+
+@interface InspectionEngine : NSObject
++ (NSString *)performDeepInspection;
++ (void)forceRevealAll;
 @end
 
-@implementation InspectorViewController
+@implementation InspectionEngine
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.view.backgroundColor = [UIColor clearColor];
+// 1. Trích xuất Ivars & Properties ẩn qua Objective-C Runtime
++ (NSString *)dumpRuntimeDetailsForObject:(id)obj {
+    if (!obj) return @"";
+    NSMutableString *details = [NSMutableString string];
+    Class cls = [obj class];
     
-    // Panel chính
-    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-    self.panelContainer = [[UIView alloc] initWithFrame:CGRectMake(15, 60, screenW - 30, 360)];
-    self.panelContainer.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.92];
-    self.panelContainer.layer.cornerRadius = 14;
-    self.panelContainer.layer.borderWidth = 1.0;
-    self.panelContainer.layer.borderColor = [UIColor colorWithWhite:0.3 alpha:1.0].CGColor;
-    self.panelContainer.clipsToBounds = YES;
-    [self.view addSubview:self.panelContainer];
-    
-    // Kéo thả Panel (Pan Gesture)
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)];
-    [self.panelContainer addGestureRecognizer:pan];
-
-    // Nút Scan Views
-    UIButton *scanBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    scanBtn.frame = CGRectMake(10, 12, 90, 32);
-    [scanBtn setTitle:@"Scan Views" forState:UIControlStateNormal];
-    scanBtn.backgroundColor = [UIColor systemBlueColor];
-    scanBtn.tintColor = [UIColor whiteColor];
-    scanBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    scanBtn.layer.cornerRadius = 6;
-    [scanBtn addTarget:self action:@selector(scanHiddenElements) forControlEvents:UIControlEventTouchUpInside];
-    [self.panelContainer addSubview:scanBtn];
-
-    // Nút Unhide All
-    UIButton *unhideBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    unhideBtn.frame = CGRectMake(110, 12, 90, 32);
-    [unhideBtn setTitle:@"Unhide All" forState:UIControlStateNormal];
-    unhideBtn.backgroundColor = [UIColor systemOrangeColor];
-    unhideBtn.tintColor = [UIColor whiteColor];
-    unhideBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    unhideBtn.layer.cornerRadius = 6;
-    [unhideBtn addTarget:self action:@selector(unhideAllHiddenElements) forControlEvents:UIControlEventTouchUpInside];
-    [self.panelContainer addSubview:unhideBtn];
-
-    // Nút Thu nhỏ / Phóng to
-    UIButton *toggleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    toggleBtn.frame = CGRectMake(self.panelContainer.frame.size.width - 75, 12, 65, 32);
-    [toggleBtn setTitle:@"Ẩn/Hiện" forState:UIControlStateNormal];
-    toggleBtn.backgroundColor = [UIColor systemRedColor];
-    toggleBtn.tintColor = [UIColor whiteColor];
-    toggleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
-    toggleBtn.layer.cornerRadius = 6;
-    [toggleBtn addTarget:self action:@selector(toggleMinimize) forControlEvents:UIControlEventTouchUpInside];
-    [self.panelContainer addSubview:toggleBtn];
-
-    // Text View log kết quả
-    self.textView = [[UITextView alloc] initWithFrame:CGRectMake(10, 55, self.panelContainer.frame.size.width - 20, 295)];
-    self.textView.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
-    self.textView.textColor = [UIColor greenColor];
-    self.textView.font = [UIFont fontWithName:@"Menlo" size:10.5];
-    self.textView.editable = NO;
-    self.textView.layer.cornerRadius = 8;
-    [self.panelContainer addSubview:self.textView];
-}
-
-- (void)handlePan:(UIPanGestureRecognizer *)gesture {
-    CGPoint translation = [gesture translationInView:self.view];
-    UIView *target = self.panelContainer;
-    target.center = CGPointMake(target.center.x + translation.x, target.center.y + translation.y);
-    [gesture setTranslation:CGPointZero inView:self.view];
-}
-
-- (void)toggleMinimize {
-    self.isMinimized = !self.isMinimized;
-    [UIView animateWithDuration:0.25 animations:^{
-        if (self.isMinimized) {
-            self.panelContainer.frame = CGRectMake(self.panelContainer.frame.origin.x, self.panelContainer.frame.origin.y, 200, 55);
-            self.textView.hidden = YES;
-        } else {
-            CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-            self.panelContainer.frame = CGRectMake(15, self.panelContainer.frame.origin.y, screenW - 30, 360);
-            self.textView.hidden = NO;
+    // Dump Ivars (Biến thành viên private)
+    unsigned int ivarCount = 0;
+    Ivar *ivars = class_copyIvarList(cls, &ivarCount);
+    if (ivars) {
+        for (unsigned int i = 0; i < ivarCount; i++) {
+            const char *name = ivar_getName(ivars[i]);
+            const char *type = ivar_getTypeEncoding(ivars[i]);
+            if (!name) continue;
+            
+            NSString *ivarName = [NSString stringWithUTF8String:name];
+            // Lọc các ivar tiềm năng chứa dữ liệu (text, token, balance, user, auth, secret)
+            NSString *lower = [ivarName lowercaseString];
+            if ([lower containsString:@"text"] || [lower containsString:@"token"] || 
+                [lower containsString:@"pass"] || [lower containsString:@"data"] || 
+                [lower containsString:@"user"] || [lower containsString:@"info"] ||
+                [lower containsString:@"value"] || [lower containsString:@"title"]) {
+                
+                @try {
+                    id val = object_getIvar(obj, ivars[i]);
+                    if (val && [val respondsToSelector:@selector(description)]) {
+                        NSString *desc = [val description];
+                        if (desc.length > 0 && desc.length < 150) {
+                            [details appendFormat:@"\n      [Ivar: %s = %@] ", name, desc];
+                        }
+                    }
+                } @catch (__unused NSException *e) {}
+            }
         }
-    }];
+        free(ivars);
+    }
+    return details;
 }
 
-// Xử lý đệ quy cây View
-- (void)dumpViewHierarchy:(UIView *)view level:(int)level buffer:(NSMutableString *)buffer {
-    if (!view || view == self.view || view == self.panelContainer) return;
-
-    NSString *indent = [@"" stringByPaddingToLength:level * 2 withString:@"  " startingAtIndex:0];
-    BOOL isHidden = view.isHidden || view.alpha < 0.05;
+// 2. Trích xuất text từ mọi cơ chế hiển thị (UILabel, UITextField, Web, Flutter/SwiftUI Container)
++ (NSString *)extractTextFromView:(UIView *)view {
+    NSMutableString *outStr = [NSMutableString string];
     
-    NSString *extraInfo = @"";
+    // Check UITextField / UITextView / UILabel
     if ([view isKindOfClass:[UILabel class]]) {
-        extraInfo = [NSString stringWithFormat:@"[Text: '%@']", [(UILabel *)view text] ?: @""];
+        NSString *t = [(UILabel *)view text];
+        if (t.length) [outStr appendFormat:@"[Label: \"%@\"] ", t];
     } else if ([view isKindOfClass:[UITextField class]]) {
         UITextField *tf = (UITextField *)view;
-        extraInfo = [NSString stringWithFormat:@"[TF: '%@' | Secure: %d]", tf.text ?: @"", tf.isSecureTextEntry];
+        if (tf.text.length) [outStr appendFormat:@"[TF: \"%@\" | Secure: %d] ", tf.text, tf.isSecureTextEntry];
     } else if ([view isKindOfClass:[UITextView class]]) {
-        extraInfo = [NSString stringWithFormat:@"[TV: '%@']", [(UITextView *)view text] ?: @""];
+        NSString *t = [(UITextView *)view text];
+        if (t.length) [outStr appendFormat:@"[TV: \"%@\"] ", t];
     } else if ([view isKindOfClass:[UIButton class]]) {
-        extraInfo = [NSString stringWithFormat:@"[Btn: '%@']", [(UIButton *)view titleForState:UIControlStateNormal] ?: @""];
+        NSString *t = [(UIButton *)view titleForState:UIControlStateNormal];
+        if (t.length) [outStr appendFormat:@"[Btn: \"%@\"] ", t];
     }
 
-    if (isHidden || extraInfo.length > 0) {
-        [buffer appendFormat:@"%@• %@ (Hidden:%d, α:%.1f) %@\n", 
-            indent, 
-            NSStringFromClass([view class]), 
-            view.isHidden, 
-            view.alpha, 
-            extraInfo];
+    // Dynamic extraction qua KVC nếu app bọc custom view
+    if (outStr.length == 0) {
+        NSArray *possibleKeys = @[@"text", @"title", @"accessibilityLabel", @"stringValue", @"attributedText.string"];
+        for (NSString *key in possibleKeys) {
+            @try {
+                id val = [view valueForKeyPath:key];
+                if ([val isKindOfClass:[NSString class]] && [(NSString *)val length] > 0) {
+                    [outStr appendFormat:@"[%@: \"%@\"] ", key, val];
+                    break;
+                }
+            } @catch (__unused NSException *e) {}
+        }
+    }
+    return outStr;
+}
+
+// 3. Quét đệ quy cây View + CALayer + ViewController
++ (void)recursiveInspectView:(UIView *)view level:(int)level buffer:(NSMutableString *)buffer filterWindow:(UIWindow *)inspectorWin {
+    if (!view || view == inspectorWin || [view isDescendantOfView:inspectorWin]) return;
+
+    NSString *indent = [@"" stringByPaddingToLength:level * 2 withString:@"  " startingAtIndex:0];
+    
+    // Kiểm tra trạng thái ẩn chuyên sâu
+    BOOL isHidden = view.isHidden;
+    BOOL isAlphaZero = view.alpha < 0.05;
+    BOOL isOutOfBounds = (view.frame.origin.x < -50 || view.frame.origin.y < -50 || 
+                          view.frame.size.width <= 1 || view.frame.size.height <= 1);
+    BOOL isLayerHidden = view.layer.hidden || view.layer.opacity < 0.05;
+    
+    NSString *textContent = [self extractTextFromView:view];
+    NSString *runtimeInfo = [self dumpRuntimeDetailsForObject:view];
+    
+    // Tìm UIViewController quản lý view này (nếu có)
+    UIResponder *responder = view.nextResponder;
+    NSString *vcInfo = @"";
+    if ([responder isKindOfClass:[UIViewController class]]) {
+        UIViewController *vc = (UIViewController *)responder;
+        vcInfo = [NSString stringWithFormat:@" -> [VC: %@]", NSStringFromClass([vc class])];
+        NSString *vcIvars = [self dumpRuntimeDetailsForObject:vc];
+        if (vcIvars.length) {
+            runtimeInfo = [runtimeInfo stringByAppendingString:vcIvars];
+        }
+    }
+
+    // Nếu view có text hoặc có dấu hiệu bị ẩn/nằm ngoài bounds
+    if (isHidden || isAlphaZero || isOutOfBounds || isLayerHidden || textContent.length > 0 || runtimeInfo.length > 0) {
+        [buffer appendFormat:@"%@• %@%@ | F: (%.0f,%.0f,%.0f,%.0f) | α: %.2f | Hidden: [V:%d, L:%d, Clip:%d] %@%@\n",
+            indent,
+            NSStringFromClass([view class]),
+            vcInfo,
+            view.frame.origin.x, view.frame.origin.y, view.frame.size.width, view.frame.size.height,
+            view.alpha,
+            isHidden, isLayerHidden, view.clipsToBounds,
+            textContent,
+            runtimeInfo];
     }
 
     for (UIView *sub in view.subviews) {
-        [self dumpViewHierarchy:sub level:level + 1 buffer:buffer];
+        [self recursiveInspectView:sub level:level + 1 buffer:buffer filterWindow:inspectorWin];
     }
 }
 
-// Tìm toàn bộ UIWindow đang có trên app (hỗ trợ cả iOS 13+ Scene lẫn iOS cũ)
-- (NSArray<UIWindow *> *)getAllAppWindows {
-    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
++ (NSString *)performDeepInspection {
+    NSMutableString *buffer = [NSMutableString stringWithCapacity:16384];
+    [buffer appendString:@"====== DEEP UI & RUNTIME INSPECTION ======\n\n"];
     
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
     if (@available(iOS 13.0, *)) {
         for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
             if ([scene isKindOfClass:[UIWindowScene class]]) {
-                UIWindowScene *ws = (UIWindowScene *)scene;
-                [windows addObjectsFromArray:ws.windows];
+                [windows addObjectsFromArray:((UIWindowScene *)scene).windows];
             }
         }
     }
-    
     if (windows.count == 0) {
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Wdeprecated-declarations"
         [windows addObjectsFromArray:[UIApplication sharedApplication].windows];
         #pragma clang diagnostic pop
     }
-    return windows;
-}
 
-- (void)scanHiddenElements {
-    NSMutableString *buf = [NSMutableString stringWithString:@"=== KẾT QUẢ DUMP VIEW & DỮ LIỆU ===\n"];
-    NSArray<UIWindow *> *windows = [self getAllAppWindows];
-    
     for (UIWindow *w in windows) {
-        if (w == self.view.window) continue;
-        [buf appendFormat:@"\n[WINDOW: %@ (Hidden:%d)]\n", NSStringFromClass([w class]), w.isHidden];
-        [self dumpViewHierarchy:w level:0 buffer:buf];
+        [buffer appendFormat:@"\n[ROOT WINDOW: %@ | Layer: %p | Frame: %@]\n", 
+            NSStringFromClass([w class]), w.layer, NSStringFromCGRect(w.frame)];
+        [self recursiveInspectView:w level:0 buffer:buffer filterWindow:nil];
     }
-    self.textView.text = buf;
+
+    return buffer;
 }
 
-- (void)unhideRecursive:(UIView *)view {
-    if (!view || view == self.view || view == self.panelContainer) return;
++ (void)forceUnhideView:(UIView *)view {
+    if (!view) return;
     
     view.hidden = NO;
-    if (view.alpha < 1.0) view.alpha = 1.0;
+    view.alpha = 1.0;
+    view.layer.hidden = NO;
+    view.layer.opacity = 1.0;
+    view.clipsToBounds = NO; // Cho phép hiển thị nếu view con vẽ tràn ra ngoài
     
     if ([view isKindOfClass:[UITextField class]]) {
         ((UITextField *)view).secureTextEntry = NO;
     }
     
+    // Đưa view bị đẩy ra ngoài tọa độ âm về lại màn hình (nếu có)
+    if (view.frame.origin.x < 0 || view.frame.origin.y < 0) {
+        CGRect f = view.frame;
+        if (f.origin.x < 0) f.origin.x = 0;
+        if (f.origin.y < 0) f.origin.y = 0;
+        view.frame = f;
+    }
+    
     for (UIView *sub in view.subviews) {
-        [self unhideRecursive:sub];
+        [self forceUnhideView:sub];
     }
 }
 
-- (void)unhideAllHiddenElements {
-    for (UIWindow *w in [self getAllAppWindows]) {
-        if (w == self.view.window) continue;
-        w.hidden = NO;
-        [self unhideRecursive:w];
++ (void)forceRevealAll {
+    NSArray<UIWindow *> *windows = [UIApplication sharedApplication].windows;
+    for (UIWindow *w in windows) {
+        [self forceUnhideView:w];
     }
-    [self scanHiddenElements];
 }
 
 @end
 
-// Lớp UIWindow tùy biến hỗ trợ xuyên chạm ra ngoài panel
-@interface CustomOverlayWindow : UIWindow
+#pragma mark - UI OVERLAY (DRAGGABLE & RESIZABLE)
+
+@interface AdvancedInspectorVC : UIViewController <UISearchBarDelegate>
+@property (nonatomic, strong) UIView *panel;
+@property (nonatomic, strong) UITextView *textView;
+@property (nonatomic, strong) UISearchBar *searchBar;
+@property (nonatomic, copy) NSString *fullLog;
 @end
 
-@implementation CustomOverlayWindow
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hitView = [super hitTest:point withEvent:event];
-    // Nếu chạm vào vùng trống ngoài panel thì nhường tương tác cho app gốc
-    if (hitView == self.rootViewController.view) {
-        return nil;
-    }
-    return hitView;
+@implementation AdvancedInspectorVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor clearColor];
+    
+    CGFloat w = [UIScreen mainScreen].bounds.size.width;
+    self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 60, w - 20, 420)];
+    self.panel.backgroundColor = [[UIColor colorWithWhite:0.05 alpha:0.95] colorWithAlphaComponent:0.95];
+    self.panel.layer.cornerRadius = 12;
+    self.panel.layer.borderWidth = 1;
+    self.panel.layer.borderColor = [UIColor colorWithWhite:0.25 alpha:1.0].CGColor;
+    self.panel.clipsToBounds = YES;
+    [self.view addSubview:self.panel];
+    
+    // Pan gesture di chuyển panel
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
+    [self.panel addGestureRecognizer:pan];
+    
+    // Controls Header
+    UIButton *scanBtn = [self createButtonWithTitle:@"Deep Scan" color:[UIColor systemBlueColor] frame:CGRectMake(8, 10, 85, 30) action:@selector(runScan)];
+    UIButton *unhideBtn = [self createButtonWithTitle:@"Force Reveal" color:[UIColor systemOrangeColor] frame:CGRectMake(98, 10, 95, 30) action:@selector(runUnhide)];
+    UIButton *copyBtn = [self createButtonWithTitle:@"Copy" color:[UIColor systemGreenColor] frame:CGRectMake(198, 10, 55, 30) action:@selector(copyLog)];
+    UIButton *minBtn = [self createButtonWithTitle:@"Min" color:[UIColor systemRedColor] frame:CGRectMake(self.panel.frame.size.width - 50, 10, 42, 30) action:@selector(toggleMin)];
+    
+    [self.panel addSubview:scanBtn];
+    [self.panel addSubview:unhideBtn];
+    [self.panel addSubview:copyBtn];
+    [self.panel addSubview:minBtn];
+    
+    // Search Bar lọc log nhanh
+    self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 45, self.panel.frame.size.width, 36)];
+    self.searchBar.placeholder = @"Filter (e.g., token, label, text)...";
+    self.searchBar.searchBarStyle = UISearchBarStyleMinimal;
+    self.searchBar.delegate = self;
+    self.searchBar.barStyle = UIBarStyleBlack;
+    [self.panel addSubview:self.searchBar];
+
+    // Log View
+    self.textView = [[UITextView alloc] initWithFrame:CGRectMake(8, 85, self.panel.frame.size.width - 16, 325)];
+    self.textView.backgroundColor = [UIColor blackColor];
+    self.textView.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
+    self.textView.font = [UIFont fontWithName:@"Menlo-Regular" size:10];
+    self.textView.editable = NO;
+    self.textView.layer.cornerRadius = 6;
+    [self.panel addSubview:self.textView];
 }
-@end
 
-static CustomOverlayWindow *gOverlayWindow = nil;
+- (UIButton *)createButtonWithTitle:(NSString *)title color:(UIColor *)color frame:(CGRect)frame action:(SEL)action {
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    btn.frame = frame;
+    [btn setTitle:title forState:UIControlStateNormal];
+    btn.backgroundColor = color;
+    btn.tintColor = [UIColor whiteColor];
+    btn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+    btn.layer.cornerRadius = 5;
+    [btn addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return btn;
+}
 
-static void setupInspectorWindow(void) {
-    UIWindowScene *activeScene = nil;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                activeScene = (UIWindowScene *)scene;
-                break;
-            }
-        }
-    }
+- (void)onPan:(UIPanGestureRecognizer *)p {
+    CGPoint trans = [p translationInView:self.view];
+    self.panel.center = CGPointMake(self.panel.center.x + trans.x, self.panel.center.y + trans.y);
+    [p setTranslation:CGPointZero inView:self.view];
+}
 
-    if (@available(iOS 13.0, *)) {
-        if (activeScene) {
-            gOverlayWindow = [[CustomOverlayWindow alloc] initWithWindowScene:activeScene];
+- (void)toggleMin {
+    [UIView animateWithDuration:0.2 animations:^{
+        if (self.panel.frame.size.height > 60) {
+            self.panel.frame = CGRectMake(self.panel.frame.origin.x, self.panel.frame.origin.y, 220, 50);
+            self.textView.hidden = YES;
+            self.searchBar.hidden = YES;
         } else {
-            gOverlayWindow = [[CustomOverlayWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+            CGFloat w = [UIScreen mainScreen].bounds.size.width;
+            self.panel.frame = CGRectMake(10, self.panel.frame.origin.y, w - 20, 420);
+            self.textView.hidden = NO;
+            self.searchBar.hidden = NO;
         }
-    } else {
-        gOverlayWindow = [[CustomOverlayWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-    }
-
-    gOverlayWindow.windowLevel = UIWindowLevelAlert + 1000.0;
-    gOverlayWindow.backgroundColor = [UIColor clearColor];
-    
-    InspectorViewController *vc = [[InspectorViewController alloc] init];
-    gOverlayWindow.rootViewController = vc;
-    gOverlayWindow.hidden = NO;
-    
-    [vc scanHiddenElements];
+    }];
 }
+
+- (void)runScan {
+    self.textView.text = @"Scanning...";
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *res = [InspectionEngine performDeepInspection];
+        dispatch_async(dispatch_get_mainQueue(), ^{
+            self.fullLog = res;
+            self.textView.text = res;
+        });
+    });
+}
+
+- (void)runUnhide {
+    [InspectionEngine forceRevealAll];
+    [self runScan];
+}
+
+- (void)copyLog {
+    [UIPasteboard generalPasteboard].string = self.textView.text;
+    [self.view endEditing:YES];
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    if (searchText.length == 0) {
+        self.textView.text = self.fullLog;
+        return;
+    }
+    NSMutableString *filtered = [NSMutableString string];
+    NSArray *lines = [self.fullLog componentsSeparatedByString:@"\n"];
+    for (NSString *l in lines) {
+        if ([l localizedCaseInsensitiveContainsString:searchText]) {
+            [filtered appendFormat:@"%@\n", l];
+        }
+    }
+    self.textView.text = filtered;
+}
+
+@end
+
+#pragma mark - WINDOW INJECTION & LIFECYCLE
+
+@interface PassthroughWindow : UIWindow
+@end
+
+@implementation PassthroughWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (hit == self.rootViewController.view) return nil;
+    return hit;
+}
+@end
+
+static PassthroughWindow *gOverlay = nil;
 
 __attribute__((constructor))
-static void dylib_entry(void) {
+static void dylib_init(void) {
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification * _Nonnull note) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_mainQueue(), ^{
-            setupInspectorWindow();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_mainQueue(), ^{
+            UIWindowScene *scene = nil;
+            if (@available(iOS 13.0, *)) {
+                for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+                    if ([s isKindOfClass:[UIWindowScene class]] && s.activationState == UISceneActivationStateForegroundActive) {
+                        scene = (UIWindowScene *)s;
+                        break;
+                    }
+                }
+            }
+            
+            if (scene) {
+                gOverlay = [[PassthroughWindow alloc] initWithWindowScene:scene];
+            } else {
+                gOverlay = [[PassthroughWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+            }
+            
+            gOverlay.windowLevel = UIWindowLevelAlert + 9999.0;
+            gOverlay.backgroundColor = [UIColor clearColor];
+            AdvancedInspectorVC *vc = [[AdvancedInspectorVC alloc] init];
+            gOverlay.rootViewController = vc;
+            gOverlay.hidden = NO;
+            [vc runScan];
         });
     }];
 }
