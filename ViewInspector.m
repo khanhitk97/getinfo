@@ -11,7 +11,6 @@
 
 @implementation DriverDataExtractor
 
-// 1. Tách sạch các SĐT (0975069335, 0394476559...)
 + (NSArray<NSString *> *)cleanAndExtractPhones:(NSString *)rawText {
     if (!rawText || rawText.length < 8) return @[];
     
@@ -52,7 +51,6 @@
     return validPhones;
 }
 
-// 2. Kéo Bottom Sheet / ScrollView lên tối đa để lộ chi tiết món ăn
 + (void)forceExpandBottomSheetInView:(UIView *)view {
     if (!view) return;
     if ([view isKindOfClass:[UIScrollView class]]) {
@@ -67,11 +65,9 @@
     }
 }
 
-// 3. Cắt riêng phần Chi Tiết Đơn Hàng (Bỏ bản đồ, chỉ lấy từ đoạn đơn hàng xuống)
 + (UIImage *)cropOrderDetailOnly:(UIImage *)fullImage screenBounds:(CGRect)bounds {
     if (!fullImage) return nil;
     
-    // Cắt từ 35% chiều cao (ngay dưới phần Gọi cho quán) xuống đáy
     CGFloat cropY = bounds.size.height * 0.35;
     CGFloat cropHeight = bounds.size.height * 0.55;
     CGRect cropRect = CGRectMake(0, cropY, bounds.size.width, cropHeight);
@@ -103,7 +99,6 @@
         }
         if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
 
-        // Tự động kéo bung Bottom Sheet ra toàn màn hình
         [self forceExpandBottomSheetInView:mainWin];
 
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -135,7 +130,6 @@
                     }
                 }
 
-                // Nhận diện phần ghi chú/dặn dò shipper
                 for (NSUInteger i = 0; i < lines.count; i++) {
                     NSString *l = lines[i];
                     NSString *lower = [l lowercaseString];
@@ -165,7 +159,7 @@
 
 @end
 
-#pragma mark - UI BẢNG ĐIỀU KHIỂN CO GIÃN ĐỘNG (AUTO-FITTING UI)
+#pragma mark - UI BẢNG ĐIỀU KHIỂN DỒN VỀ PHÍA PHẢI
 
 @interface DriverControlVC : UIViewController
 @property (nonatomic, strong) UIButton *bubbleBtn;
@@ -182,14 +176,16 @@
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
 
-    // Bong bóng nổi
+    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
+
+    // 1. Nút bong bóng dời sát mép phải (x = screenW - 65) để không che nút Back bên trái
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.bubbleBtn.frame = CGRectMake(12, 110, 58, 58);
+    self.bubbleBtn.frame = CGRectMake(screenW - 65, 140, 54, 54);
     self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.95 green:0.38 blue:0.12 alpha:0.96];
     [self.bubbleBtn setTitle:@"🛵 Đơn" forState:UIControlStateNormal];
     [self.bubbleBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12.5];
-    self.bubbleBtn.layer.cornerRadius = 29;
+    self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12.0];
+    self.bubbleBtn.layer.cornerRadius = 27;
     self.bubbleBtn.layer.borderWidth = 2;
     self.bubbleBtn.layer.borderColor = [UIColor whiteColor].CGColor;
     [self.bubbleBtn addTarget:self action:@selector(openPanel) forControlEvents:UIControlEventTouchUpInside];
@@ -198,9 +194,9 @@
     [self.bubbleBtn addGestureRecognizer:panB];
     [self.view addSubview:self.bubbleBtn];
 
-    // Panel chính
-    CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-    self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 65, screenW - 20, 190)];
+    // 2. Bảng Panel chính dạt về bên phải (chừa khoảng trống bên trái cho nút Back)
+    CGFloat panelW = screenW - 20;
+    self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 75, panelW, 190)];
     self.panel.backgroundColor = [[UIColor colorWithWhite:0.08 alpha:0.98] colorWithAlphaComponent:0.98];
     self.panel.layer.cornerRadius = 14;
     self.panel.layer.borderWidth = 1.2;
@@ -212,7 +208,7 @@
     UIPanGestureRecognizer *panP = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanPanel:)];
     [self.panel addGestureRecognizer:panP];
 
-    // 1. Tiêu đề & Nút đóng
+    // Tiêu đề & Nút đóng
     UILabel *noteTitle = [[UILabel alloc] initWithFrame:CGRectMake(12, 10, self.panel.frame.size.width - 55, 16)];
     noteTitle.text = @"📌 GHI CHÚ / DẶN DÒ SHIPPER:";
     noteTitle.textColor = [UIColor systemOrangeColor];
@@ -228,7 +224,7 @@
     [closeBtn addTarget:self action:@selector(closePanel) forControlEvents:UIControlEventTouchUpInside];
     [self.panel addSubview:closeBtn];
 
-    // Banner Ghi chú đưa lên đầu
+    // Banner Ghi chú
     self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 28, self.panel.frame.size.width - 20, 42)];
     self.noteLabel.backgroundColor = [UIColor colorWithRed:0.2 green:0.14 blue:0.04 alpha:0.9];
     self.noteLabel.textColor = [UIColor yellowColor];
@@ -241,14 +237,14 @@
     self.noteLabel.text = @" Đang kéo đơn hàng...";
     [self.panel addSubview:self.noteLabel];
 
-    // 2. Stack SĐT co giãn động
+    // Stack SĐT co giãn
     self.phoneStackView = [[UIStackView alloc] initWithFrame:CGRectMake(10, 76, self.panel.frame.size.width - 20, 20)];
     self.phoneStackView.axis = UILayoutConstraintAxisVertical;
     self.phoneStackView.distribution = UIStackViewDistributionFillEqually;
     self.phoneStackView.spacing = 6;
     [self.panel addSubview:self.phoneStackView];
 
-    // 3. Nút Chia sẻ ảnh
+    // Nút Gửi ảnh cho quán
     self.shareBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.shareBtn.frame = CGRectMake(10, 102, self.panel.frame.size.width - 20, 42);
     [self.shareBtn setTitle:@"📤 GỬI ẢNH MÓN CHO QUÁN LÀM TRƯỚC" forState:UIControlStateNormal];
@@ -291,13 +287,11 @@
         self.orderImageToSend = croppedOrderImage;
         self.noteLabel.text = [NSString stringWithFormat:@"  %@", customerNote];
 
-        // Xóa dòng SĐT cũ
         for (UIView *v in self.phoneStackView.arrangedSubviews) {
             [self.phoneStackView removeArrangedSubview:v];
             [v removeFromSuperview];
         }
 
-        // TÍNH TOÁN CHIỀU CAO CO GIÃN TỰ ĐỘNG
         CGFloat stackHeight = 0;
         if (phones.count > 0) {
             for (NSString *phone in phones) {
@@ -334,7 +328,6 @@
     row.backgroundColor = [UIColor colorWithWhite:0.14 alpha:1.0];
     row.layer.cornerRadius = 6;
 
-    // Số điện thoại (Chạm để sửa)
     UIButton *numBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     numBtn.frame = CGRectMake(8, 3, row.frame.size.width - 90, 28);
     [numBtn setTitle:[NSString stringWithFormat:@"📱 %@", phoneNumber] forState:UIControlStateNormal];
@@ -345,7 +338,6 @@
     [numBtn addTarget:self action:@selector(editPhoneNumberPrompt:) forControlEvents:UIControlEventTouchUpInside];
     [row addSubview:numBtn];
 
-    // Nút Gọi bên phải
     UIButton *callBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     callBtn.frame = CGRectMake(row.frame.size.width - 76, 4, 70, 26);
     [callBtn setTitle:@"📞 Gọi" forState:UIControlStateNormal];
