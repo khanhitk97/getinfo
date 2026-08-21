@@ -1,4 +1,4 @@
-name: Build Vision OCR Dylib
+name: Build Pentest Dylib
 
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Build Dylib
+      - name: Compile Dylib
         run: |
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "Building with SDK: $SDK_PATH"
@@ -31,12 +31,7 @@ jobs:
                 -O2 \
                 ViewInspector.m -o ViewInspector.dylib
 
-      - name: Validate Binary
-        run: |
-          file ViewInspector.dylib
-          otool -L ViewInspector.dylib
-
-      - name: Upload Artifact
+      - name: Upload Binary Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ViewInspector.dylib
