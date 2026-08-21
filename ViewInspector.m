@@ -23,11 +23,9 @@
     if (ivars) {
         for (unsigned int i = 0; i < ivarCount; i++) {
             const char *name = ivar_getName(ivars[i]);
-            const char *type = ivar_getTypeEncoding(ivars[i]);
             if (!name) continue;
             
             NSString *ivarName = [NSString stringWithUTF8String:name];
-            // Lọc các ivar tiềm năng chứa dữ liệu (text, token, balance, user, auth, secret)
             NSString *lower = [ivarName lowercaseString];
             if ([lower containsString:@"text"] || [lower containsString:@"token"] || 
                 [lower containsString:@"pass"] || [lower containsString:@"data"] || 
@@ -50,11 +48,10 @@
     return details;
 }
 
-// 2. Trích xuất text từ mọi cơ chế hiển thị (UILabel, UITextField, Web, Flutter/SwiftUI Container)
+// 2. Trích xuất text từ mọi cơ chế hiển thị
 + (NSString *)extractTextFromView:(UIView *)view {
     NSMutableString *outStr = [NSMutableString string];
     
-    // Check UITextField / UITextView / UILabel
     if ([view isKindOfClass:[UILabel class]]) {
         NSString *t = [(UILabel *)view text];
         if (t.length) [outStr appendFormat:@"[Label: \"%@\"] ", t];
@@ -69,7 +66,6 @@
         if (t.length) [outStr appendFormat:@"[Btn: \"%@\"] ", t];
     }
 
-    // Dynamic extraction qua KVC nếu app bọc custom view
     if (outStr.length == 0) {
         NSArray *possibleKeys = @[@"text", @"title", @"accessibilityLabel", @"stringValue", @"attributedText.string"];
         for (NSString *key in possibleKeys) {
@@ -91,7 +87,6 @@
 
     NSString *indent = [@"" stringByPaddingToLength:level * 2 withString:@"  " startingAtIndex:0];
     
-    // Kiểm tra trạng thái ẩn chuyên sâu
     BOOL isHidden = view.isHidden;
     BOOL isAlphaZero = view.alpha < 0.05;
     BOOL isOutOfBounds = (view.frame.origin.x < -50 || view.frame.origin.y < -50 || 
@@ -101,7 +96,6 @@
     NSString *textContent = [self extractTextFromView:view];
     NSString *runtimeInfo = [self dumpRuntimeDetailsForObject:view];
     
-    // Tìm UIViewController quản lý view này (nếu có)
     UIResponder *responder = view.nextResponder;
     NSString *vcInfo = @"";
     if ([responder isKindOfClass:[UIViewController class]]) {
@@ -113,7 +107,6 @@
         }
     }
 
-    // Nếu view có text hoặc có dấu hiệu bị ẩn/nằm ngoài bounds
     if (isHidden || isAlphaZero || isOutOfBounds || isLayerHidden || textContent.length > 0 || runtimeInfo.length > 0) {
         [buffer appendFormat:@"%@• %@%@ | F: (%.0f,%.0f,%.0f,%.0f) | α: %.2f | Hidden: [V:%d, L:%d, Clip:%d] %@%@\n",
             indent,
@@ -166,13 +159,12 @@
     view.alpha = 1.0;
     view.layer.hidden = NO;
     view.layer.opacity = 1.0;
-    view.clipsToBounds = NO; // Cho phép hiển thị nếu view con vẽ tràn ra ngoài
+    view.clipsToBounds = NO;
     
     if ([view isKindOfClass:[UITextField class]]) {
         ((UITextField *)view).secureTextEntry = NO;
     }
     
-    // Đưa view bị đẩy ra ngoài tọa độ âm về lại màn hình (nếu có)
     if (view.frame.origin.x < 0 || view.frame.origin.y < 0) {
         CGRect f = view.frame;
         if (f.origin.x < 0) f.origin.x = 0;
@@ -218,11 +210,9 @@
     self.panel.clipsToBounds = YES;
     [self.view addSubview:self.panel];
     
-    // Pan gesture di chuyển panel
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
     [self.panel addGestureRecognizer:pan];
     
-    // Controls Header
     UIButton *scanBtn = [self createButtonWithTitle:@"Deep Scan" color:[UIColor systemBlueColor] frame:CGRectMake(8, 10, 85, 30) action:@selector(runScan)];
     UIButton *unhideBtn = [self createButtonWithTitle:@"Force Reveal" color:[UIColor systemOrangeColor] frame:CGRectMake(98, 10, 95, 30) action:@selector(runUnhide)];
     UIButton *copyBtn = [self createButtonWithTitle:@"Copy" color:[UIColor systemGreenColor] frame:CGRectMake(198, 10, 55, 30) action:@selector(copyLog)];
@@ -233,7 +223,6 @@
     [self.panel addSubview:copyBtn];
     [self.panel addSubview:minBtn];
     
-    // Search Bar lọc log nhanh
     self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 45, self.panel.frame.size.width, 36)];
     self.searchBar.placeholder = @"Filter (e.g., token, label, text)...";
     self.searchBar.searchBarStyle = UISearchBarStyleMinimal;
@@ -241,7 +230,6 @@
     self.searchBar.barStyle = UIBarStyleBlack;
     [self.panel addSubview:self.searchBar];
 
-    // Log View
     self.textView = [[UITextView alloc] initWithFrame:CGRectMake(8, 85, self.panel.frame.size.width - 16, 325)];
     self.textView.backgroundColor = [UIColor blackColor];
     self.textView.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
@@ -288,7 +276,7 @@
     self.textView.text = @"Scanning...";
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSString *res = [InspectionEngine performDeepInspection];
-        dispatch_async(dispatch_get_mainQueue(), ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
             self.fullLog = res;
             self.textView.text = res;
         });
@@ -343,7 +331,7 @@ static void dylib_init(void) {
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification * _Nonnull note) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_mainQueue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIWindowScene *scene = nil;
             if (@available(iOS 13.0, *)) {
                 for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
