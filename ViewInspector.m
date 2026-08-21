@@ -3,18 +3,187 @@
 #import <QuartzCore/QuartzCore.h>
 #import <Vision/Vision.h>
 
-#pragma mark - OCR & DEEP ACCESSIBILITY ENGINE
+#pragma mark - DEEP RUNTIME & HIDDEN DATA ENGINE
+
+@interface DeepHiddenDataExtractor : NSObject
++ (NSString *)performDeepSystemScan;
+@end
+
+@implementation DeepHiddenDataExtractor
+
+// Duyệt đệ quy object bất kỳ trong bộ nhớ (Dictionary, Array, Model, String)
++ (void)dumpObject:(id)obj depth:(int)depth keyName:(NSString *)keyName buffer:(NSMutableString *)buffer visited:(NSMutableSet *)visited {
+    if (!obj || depth > 5) return;
+    
+    // Chống lặp vô tận do vòng lặp tham chiếu
+    NSValue *ptrVal = [NSValue valueWithNonretainedObject:obj];
+    if ([visited containsObject:ptrVal]) return;
+    [visited addObject:ptrVal];
+
+    NSString *indent = [@"" stringByPaddingToLength:depth * 2 withString:@"  " startingAtIndex:0];
+
+    @try {
+        if ([obj isKindOfClass:[NSString class]]) {
+            NSString *str = (NSString *)obj;
+            if (str.length > 0) {
+                [buffer appendFormat:@"%@• [%@] \"%@\"\n", indent, keyName ?: @"Str", str];
+            }
+        } else if ([obj isKindOfClass:[NSNumber class]]) {
+            [buffer appendFormat:@"%@• [%@] %@\n", indent, keyName ?: @"Num", obj];
+        } else if ([obj isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *dict = (NSDictionary *)obj;
+            [buffer appendFormat:@"%@📂 [%@] Dict (%lu items):\n", indent, keyName ?: @"Data", (unsigned long)dict.count];
+            for (id key in dict) {
+                [self dumpObject:dict[key] depth:depth + 1 keyName:[key description] buffer:buffer visited:visited];
+            }
+        } else if ([obj isKindOfClass:[NSArray class]]) {
+            NSArray *arr = (NSArray *)obj;
+            if (arr.count > 0 && arr.count <= 20) {
+                [buffer appendFormat:@"%@📑 [%@] Array (%lu items):\n", indent, keyName ?: @"List", (unsigned long)arr.count];
+                for (NSUInteger i = 0; i < arr.count; i++) {
+                    [self dumpObject:arr[i] depth:depth + 1 keyName:[NSString stringWithFormat:@"%lu", (unsigned long)i] buffer:buffer visited:visited];
+                }
+            }
+        } else {
+            // Quét Ivars của Custom Class (Model, Controller, Cell)
+            Class cls = [obj class];
+            NSString *className = NSStringFromClass(cls);
+            if ([className hasPrefix:@"UI"] && ![className containsString:@"Cell"] && ![className containsString:@"Controller"]) {
+                return;
+            }
+
+            unsigned int ivarCount = 0;
+            Ivar *ivars = class_copyIvarList(cls, &ivarCount);
+            if (ivars) {
+                for (unsigned int i = 0; i < ivarCount; i++) {
+                    const char *type = ivar_getTypeEncoding(ivars[i]);
+                    const char *name = ivar_getName(ivars[i]);
+                    if (type && type[0] == '@' && name) {
+                        @try {
+                            id val = object_getIvar(obj, ivars[i]);
+                            if (val && ![val isKindOfClass:[UIView class]] && ![val isKindOfClass:[UIViewController class]]) {
+                                NSString *ivarName = [NSString stringWithUTF8String:name];
+                                [self dumpObject:val depth:depth + 1 keyName:ivarName buffer:buffer visited:visited];
+                            }
+                        } @catch (__unused NSException *e) {}
+                    }
+                }
+                free(ivars);
+            }
+        }
+    } @catch (__unused NSException *e) {}
+}
+
+// Quét toàn bộ View ẩn
++ (void)scanHiddenViewsOnly:(UIView *)view level:(int)level buffer:(NSMutableString *)buffer {
+    if (!view) return;
+
+    NSString *indent = [@"" stringByPaddingToLength:level * 2 withString:@"  " startingAtIndex:0];
+    
+    @try {
+        BOOL isHidden = view.isHidden;
+        BOOL isAlphaZero = view.alpha < 0.05;
+        BOOL isOffscreen = (view.frame.origin.x < -10 || view.frame.origin.y < -10 || view.frame.size.width <= 1);
+        BOOL isLayerHidden = view.layer.hidden || view.layer.opacity < 0.05;
+
+        NSMutableString *textVal = [NSMutableString string];
+        if ([view isKindOfClass:[UILabel class]]) {
+            NSString *t = [(UILabel *)view text];
+            if (t.length) [textVal appendFormat:@"Text: \"%@\"", t];
+        } else if ([view isKindOfClass:[UITextField class]]) {
+            UITextField *tf = (UITextField *)view;
+            if (tf.text.length) [textVal appendFormat:@"TF: \"%@\" (Sec:%d)", tf.text, tf.isSecureTextEntry];
+        } else if ([view isKindOfClass:[UITextView class]]) {
+            NSString *t = [(UITextView *)view text];
+            if (t.length) [textVal appendFormat:@"TV: \"%@\"", t];
+        }
+
+        if (view.accessibilityLabel.length) [textVal appendFormat:@" | A11y: \"%@\"", view.accessibilityLabel];
+        if (view.accessibilityValue.length) [textVal appendFormat:@" | Val: \"%@\"", view.accessibilityValue];
+
+        if (isHidden || isAlphaZero || isOffscreen || isLayerHidden) {
+            [buffer appendFormat:@"%@⛔ [BỊ ẨN] %@ | Frame:%@ | α:%.1f %@\n",
+                indent, NSStringFromClass([view class]), NSStringFromCGRect(view.frame), view.alpha, textVal];
+        } else if (textVal.length > 0) {
+            [buffer appendFormat:@"%@👁️ %@ -> %@\n", indent, NSStringFromClass([view class]), textVal];
+        }
+
+        for (UIView *sub in view.subviews) {
+            [self scanHiddenViewsOnly:sub level:level + 1 buffer:buffer];
+        }
+    } @catch (__unused NSException *e) {}
+}
+
++ (UIViewController *)getTopViewController:(UIViewController *)root {
+    if ([root isKindOfClass:[UINavigationController class]]) {
+        return [self getTopViewController:[(UINavigationController *)root visibleViewController]];
+    }
+    if ([root isKindOfClass:[UITabBarController class]]) {
+        return [self getTopViewController:[(UITabBarController *)root selectedViewController]];
+    }
+    if (root.presentedViewController) {
+        return [self getTopViewController:root.presentedViewController];
+    }
+    return root;
+}
+
++ (NSString *)performDeepSystemScan {
+    NSMutableString *buf = [NSMutableString stringWithCapacity:16384];
+    [buf appendString:@"====== KẾT QUẢ QUÉT TẦNG SÂU HỆ THỐNG ======\n\n"];
+
+    UIWindow *mainWin = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+            if ([s isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                    if (!w.isHidden && ![NSStringFromClass([w class]) containsString:@"InspectorOverlayWindow"]) {
+                        mainWin = w;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
+
+    UIViewController *topVC = [self getTopViewController:mainWin.rootViewController];
+
+    // PHẦN 1: DUMP BỘ NHỚ DATA MODEL & IVARS CỦA VIEWCONTROLLER
+    [buf appendString:@"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"];
+    [buf appendFormat:@"🧠 [TẦNG 1] BỘ NHỚ MODEL / IVARS: %@\n", NSStringFromClass([topVC class])];
+    [buf appendString:@"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"];
+    
+    if (topVC) {
+        NSMutableSet *visited = [NSMutableSet set];
+        [self dumpObject:topVC depth:0 keyName:@"RootVC" buffer:buf visited:visited];
+    } else {
+        [buf appendString:@"(Không tìm thấy ViewController)\n"];
+    }
+
+    // PHẦN 2: DUMP VIEW BỊ ẨN / ALPHA = 0 / OFF-SCREEN
+    [buf appendString:@"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"];
+    [buf appendString:@"👁️ [TẦNG 2] CÂY GIAO DIỆN & VIEW BỊ ẨN\n"];
+    [buf appendString:@"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"];
+    
+    if (mainWin) {
+        [self scanHiddenViewsOnly:mainWin level:0 buffer:buf];
+    }
+
+    return buf;
+}
+
+@end
+
+#pragma mark - OCR & VISION SCANNER
 
 @interface BruteforcePhoneExtractor : NSObject
 + (void)extractPhonesViaVisionOCR:(void(^)(NSArray<NSString *> *phones, NSString *allText))completion;
-+ (NSArray<NSString *> *)scanRawAccessibilityAndLayers;
 @end
 
 @implementation BruteforcePhoneExtractor
 
 + (NSArray<NSString *> *)filterPhonesFromString:(NSString *)text {
     if (!text || text.length < 8) return @[];
-    
     NSMutableArray<NSString *> *results = [NSMutableArray array];
     NSArray *patterns = @[
         @"(?:\\+84|0)[3|5|7|8|9][0-9\\s.-]{7,11}[0-9]",
@@ -53,18 +222,7 @@
                 }
             }
         }
-        
-        if (!keyWin) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            keyWin = [UIApplication sharedApplication].keyWindow;
-            #pragma clang diagnostic pop
-        }
-
-        if (!keyWin) {
-            if (completion) completion(@[], @"Không tìm thấy cửa sổ ứng dụng để chụp.");
-            return;
-        }
+        if (!keyWin) keyWin = [UIApplication sharedApplication].windows.firstObject;
 
         UIGraphicsBeginImageContextWithOptions(keyWin.bounds.size, NO, 0.0);
         [keyWin drawViewHierarchyInRect:keyWin.bounds afterScreenUpdates:NO];
@@ -92,9 +250,7 @@
                 if (topCandidate) {
                     NSString *str = topCandidate.string;
                     [fullRecognizedText appendFormat:@"%@\n", str];
-                    
-                    NSArray<NSString *> *phones = [self filterPhonesFromString:str];
-                    for (NSString *p in phones) {
+                    for (NSString *p in [self filterPhonesFromString:str]) {
                         [foundPhones addObject:p];
                     }
                 }
@@ -113,89 +269,21 @@
             [handler performRequests:@[request] error:nil];
         });
     } else {
-        if (completion) completion(@[], @"Yêu cầu iOS 13+ để chạy OCR.");
+        if (completion) completion(@[], @"Yêu cầu iOS 13+.");
     }
-}
-
-+ (void)deepScanAccessibilityInObject:(id)obj intoSet:(NSMutableSet<NSString *> *)set {
-    if (!obj) return;
-
-    @try {
-        if ([obj respondsToSelector:@selector(accessibilityLabel)]) {
-            NSString *l = [obj accessibilityLabel];
-            if (l.length) [set addObject:l];
-        }
-        if ([obj respondsToSelector:@selector(accessibilityValue)]) {
-            NSString *v = [obj accessibilityValue];
-            if (v.length) [set addObject:v];
-        }
-
-        if ([obj isKindOfClass:[CALayer class]]) {
-            CALayer *layer = (CALayer *)obj;
-            if ([layer respondsToSelector:@selector(string)]) {
-                id str = [layer valueForKey:@"string"];
-                if ([str isKindOfClass:[NSString class]]) [set addObject:(NSString *)str];
-            }
-            for (CALayer *subL in layer.sublayers) {
-                [self deepScanAccessibilityInObject:subL intoSet:set];
-            }
-        }
-
-        if ([obj isKindOfClass:[UIView class]]) {
-            UIView *v = (UIView *)obj;
-            for (id el in v.accessibilityElements) {
-                [self deepScanAccessibilityInObject:el intoSet:set];
-            }
-            for (UIView *sv in v.subviews) {
-                [self deepScanAccessibilityInObject:sv intoSet:set];
-            }
-            [self deepScanAccessibilityInObject:v.layer intoSet:set];
-        }
-    } @catch (__unused NSException *e) {}
-}
-
-+ (NSArray<NSString *> *)scanRawAccessibilityAndLayers {
-    NSMutableSet<NSString *> *allRawTexts = [NSMutableSet set];
-    NSArray<UIWindow *> *windows = @[];
-    
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]]) {
-                windows = [windows arrayByAddingObjectsFromArray:((UIWindowScene *)scene).windows];
-            }
-        }
-    }
-    if (windows.count == 0) {
-        #pragma clang diagnostic push
-        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        windows = [UIApplication sharedApplication].windows;
-        #pragma clang diagnostic pop
-    }
-
-    for (UIWindow *w in windows) {
-        if (![NSStringFromClass([w class]) containsString:@"InspectorOverlayWindow"]) {
-            [self deepScanAccessibilityInObject:w intoSet:allRawTexts];
-        }
-    }
-    
-    NSMutableSet<NSString *> *phones = [NSMutableSet set];
-    for (NSString *str in allRawTexts) {
-        for (NSString *p in [self filterPhonesFromString:str]) {
-            [phones addObject:p];
-        }
-    }
-    return [phones allObjects];
 }
 
 @end
 
-#pragma mark - GIAO DIỆN ĐIỀU KHIỂN
+#pragma mark - GIAO DIỆN ĐIỀU KHIỂN NỔI (FLOATING UI)
 
-@interface VisionInspectorVC : UIViewController
+@interface VisionInspectorVC : UIViewController <UISearchBarDelegate>
 @property (nonatomic, strong) UIButton *bubbleBtn;
 @property (nonatomic, strong) UIView *panel;
 @property (nonatomic, strong) UITextView *textView;
+@property (nonatomic, strong) UISearchBar *searchBar;
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, copy) NSString *currentRawLog;
 @end
 
 @implementation VisionInspectorVC
@@ -204,10 +292,11 @@
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor clearColor];
 
+    // Nút tròn nổi
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.bubbleBtn.frame = CGRectMake(15, 120, 65, 65);
     self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.55 blue:1.0 alpha:0.92];
-    [self.bubbleBtn setTitle:@"🎯 OCR" forState:UIControlStateNormal];
+    [self.bubbleBtn setTitle:@"🎯 Tools" forState:UIControlStateNormal];
     [self.bubbleBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
     self.bubbleBtn.layer.cornerRadius = 32.5;
@@ -219,8 +308,9 @@
     [self.bubbleBtn addGestureRecognizer:panB];
     [self.view addSubview:self.bubbleBtn];
 
+    // Bảng Panel chính
     CGFloat screenW = [UIScreen mainScreen].bounds.size.width;
-    self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 70, screenW - 20, 420)];
+    self.panel = [[UIView alloc] initWithFrame:CGRectMake(10, 60, screenW - 20, 450)];
     self.panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.96];
     self.panel.layer.cornerRadius = 14;
     self.panel.layer.borderWidth = 1.2;
@@ -232,26 +322,35 @@
     UIPanGestureRecognizer *panP = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanPanel:)];
     [self.panel addGestureRecognizer:panP];
 
-    UIButton *ocrBtn = [self makeBtn:@"📸 OCR Màn Hình" color:[UIColor systemGreenColor] frame:CGRectMake(8, 10, 115, 32) action:@selector(runOCRScan)];
-    UIButton *rawBtn = [self makeBtn:@"Semantics Quét" color:[UIColor systemOrangeColor] frame:CGRectMake(128, 10, 105, 32) action:@selector(runRawScan)];
-    UIButton *copyBtn = [self makeBtn:@"Copy" color:[UIColor systemIndigoColor] frame:CGRectMake(238, 10, 50, 32) action:@selector(copyLog)];
-    UIButton *closeBtn = [self makeBtn:@"✕" color:[UIColor systemRedColor] frame:CGRectMake(self.panel.frame.size.width - 45, 10, 38, 32) action:@selector(closePanel)];
+    // Hàng nút điều khiển
+    UIButton *ocrBtn = [self makeBtn:@"📸 OCR SĐT" color:[UIColor systemBlueColor] frame:CGRectMake(8, 10, 90, 30) action:@selector(runOCRScan)];
+    UIButton *deepBtn = [self makeBtn:@"🔬 Quét Ẩn Sâu" color:[UIColor systemOrangeColor] frame:CGRectMake(102, 10, 105, 30) action:@selector(runDeepScan)];
+    UIButton *copyBtn = [self makeBtn:@"Copy" color:[UIColor systemGreenColor] frame:CGRectMake(211, 10, 50, 30) action:@selector(copyLog)];
+    UIButton *closeBtn = [self makeBtn:@"✕" color:[UIColor systemRedColor] frame:CGRectMake(self.panel.frame.size.width - 42, 10, 34, 30) action:@selector(closePanel)];
 
     [self.panel addSubview:ocrBtn];
-    [self.panel addSubview:rawBtn];
+    [self.panel addSubview:deepBtn];
     [self.panel addSubview:copyBtn];
     [self.panel addSubview:closeBtn];
 
-    self.statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 46, self.panel.frame.size.width - 20, 20)];
+    // Search Bar để lọc nhanh dữ liệu quét sâu (VD: tìm "phone", "note", "price", "token")
+    self.searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 44, self.panel.frame.size.width, 36)];
+    self.searchBar.placeholder = @"Lọc dữ liệu (phone, note, token, address)...";
+    self.searchBar.searchBarStyle = UISearchBarStyleMinimal;
+    self.searchBar.delegate = self;
+    self.searchBar.barStyle = UIBarStyleBlack;
+    [self.panel addSubview:self.searchBar];
+
+    self.statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, 82, self.panel.frame.size.width - 20, 18)];
     self.statusLabel.textColor = [UIColor yellowColor];
-    self.statusLabel.font = [UIFont boldSystemFontOfSize:11];
-    self.statusLabel.text = @"Sẵn sàng quét ký tự...";
+    self.statusLabel.font = [UIFont boldSystemFontOfSize:10.5];
+    self.statusLabel.text = @"Sẵn sàng quét hệ thống...";
     [self.panel addSubview:self.statusLabel];
 
-    self.textView = [[UITextView alloc] initWithFrame:CGRectMake(8, 70, self.panel.frame.size.width - 16, 340)];
+    self.textView = [[UITextView alloc] initWithFrame:CGRectMake(8, 104, self.panel.frame.size.width - 16, 336)];
     self.textView.backgroundColor = [UIColor colorWithWhite:0.03 alpha:1.0];
     self.textView.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
-    self.textView.font = [UIFont fontWithName:@"Menlo-Bold" size:11.5];
+    self.textView.font = [UIFont fontWithName:@"Menlo" size:10.5];
     self.textView.editable = NO;
     self.textView.layer.cornerRadius = 6;
     [self.panel addSubview:self.textView];
@@ -293,57 +392,63 @@
 }
 
 - (void)runOCRScan {
-    self.statusLabel.text = @"Đang quét chữ màn hình (Vision OCR)...";
+    self.statusLabel.text = @"Đang quét OCR màn hình...";
     self.panel.alpha = 0.0;
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [BruteforcePhoneExtractor extractPhonesViaVisionOCR:^(NSArray<NSString *> *phones, NSString *allText) {
             self.panel.alpha = 1.0;
             NSMutableString *res = [NSMutableString string];
-            [res appendString:@"=== KẾT QUẢ QUÉT VISION OCR TỪNG CHỮ ===\n\n"];
-            
+            [res appendString:@"=== KẾT QUẢ NHẬN DIỆN MÀN HÌNH (OCR) ===\n\n"];
             if (phones.count > 0) {
-                self.statusLabel.text = [NSString stringWithFormat:@"TÌM THẤY %lu SỐ ĐIỆN THOẠI!", (unsigned long)phones.count];
-                [res appendString:@"🎯 SỐ ĐIỆN THOẠI NHẬN DIỆN ĐƯỢC:\n"];
+                self.statusLabel.text = [NSString stringWithFormat:@"TÌM THẤY %lu SĐT!", (unsigned long)phones.count];
+                [res appendString:@"🎯 SỐ ĐIỆN THOẠI HIỂN THỊ:\n"];
                 for (NSUInteger i = 0; i < phones.count; i++) {
-                    [res appendFormat:@"  👉 [%lu]  %@\n", (unsigned long)(i + 1), phones[i]];
+                    [res appendFormat:@"  👉 [%lu] %@\n", (unsigned long)(i + 1), phones[i]];
                 }
             } else {
-                self.statusLabel.text = @"Không phát hiện SĐT qua OCR.";
-                [res appendString:@"⚠️ Chưa lọc được SĐT dạng chuẩn.\n"];
+                self.statusLabel.text = @"Không thấy SĐT rõ trên màn hình.";
             }
 
-            [res appendString:@"\n--- TOÀN BỘ CHỮ ĐỌC ĐƯỢC TRÊN MÀN HÌNH ---\n"];
+            [res appendString:@"\n--- TOÀN BỘ CHỮ TRÊN MÀN HÌNH ---\n"];
             [res appendString:allText];
+            self.currentRawLog = res;
             self.textView.text = res;
         }];
     });
 }
 
-- (void)runRawScan {
-    self.statusLabel.text = @"Đang quét cây Semantics/Layers...";
-    NSArray<NSString *> *phones = [BruteforcePhoneExtractor scanRawAccessibilityAndLayers];
-    NSMutableString *res = [NSMutableString stringWithString:@"=== KẾT QUẢ QUÉT SEMANTICS & LAYERS ===\n\n"];
-    if (phones.count > 0) {
-        self.statusLabel.text = [NSString stringWithFormat:@"Tìm thấy %lu số qua Semantics!", (unsigned long)phones.count];
-        for (NSString *p in phones) {
-            [res appendFormat:@"👉 %@\n", p];
-        }
-    } else {
-        self.statusLabel.text = @"Không có SĐT trong Semantics.";
-        [res appendString:@"(Không tìm thấy qua Semantics)"];
-    }
-    self.textView.text = res;
+- (void)runDeepScan {
+    self.statusLabel.text = @"Đang dump bộ nhớ RAM & View ẩn...";
+    NSString *deepLog = [DeepHiddenDataExtractor performDeepSystemScan];
+    self.currentRawLog = deepLog;
+    self.textView.text = deepLog;
+    self.statusLabel.text = @"Đã hoàn tất quét tầng sâu!";
 }
 
 - (void)copyLog {
     [UIPasteboard generalPasteboard].string = self.textView.text ?: @"";
-    self.statusLabel.text = @"Đã sao chép vào bộ nhớ tạm!";
+    self.statusLabel.text = @"Đã chép toàn bộ vào Clipboard!";
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    if (searchText.length == 0) {
+        self.textView.text = self.currentRawLog;
+        return;
+    }
+    NSMutableString *filtered = [NSMutableString string];
+    NSArray *lines = [self.currentRawLog componentsSeparatedByString:@"\n"];
+    for (NSString *l in lines) {
+        if ([l localizedCaseInsensitiveContainsString:searchText]) {
+            [filtered appendFormat:@"%@\n", l];
+        }
+    }
+    self.textView.text = filtered;
 }
 
 @end
 
-#pragma mark - OVERLAY INJECTION
+#pragma mark - WINDOW INJECTION
 
 @interface InspectorOverlayWindow : UIWindow
 @end
