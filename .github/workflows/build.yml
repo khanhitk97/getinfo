@@ -1,0 +1,43 @@
+name: Build Production Dylib
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Dylib
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "Building with SDK: $SDK_PATH"
+          
+          # Biên dịch cho ARM64 (iOS 13.0+)
+          clang -target arm64-apple-ios13.0 \
+                -isysroot "$SDK_PATH" \
+                -dynamiclib \
+                -install_name @rpath/ViewInspector.dylib \
+                -fobjc-arc \
+                -framework UIKit \
+                -framework Foundation \
+                -framework CoreGraphics \
+                -O2 \
+                ViewInspector.m -o ViewInspector.dylib
+
+      - name: Validate Binary
+        run: |
+          file ViewInspector.dylib
+          otool -L ViewInspector.dylib
+
+      - name: Upload Dylib Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ViewInspector.dylib
+          path: ViewInspector.dylib
+          retention-days: 14
