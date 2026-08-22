@@ -69,11 +69,9 @@
     return mainWin;
 }
 
-// Duyệt cây View của React Native (Hỗ trợ RCTTextView, accessibilityLabel, text)
 + (BOOL)findReactNativeKeywordInView:(UIView *)v {
     if (!v || v.hidden || v.alpha < 0.05) return NO;
 
-    // 1. Kiểm tra accessibilityLabel
     NSString *acc = v.accessibilityLabel.lowercaseString;
     if (acc.length > 0) {
         if ([acc containsString:@"vuốt để nhận"] || [acc containsString:@"chi tiết đơn hàng"] || [acc containsString:@"giao đến địa chỉ"] || [acc containsString:@"phí giao hàng"]) {
@@ -81,7 +79,6 @@
         }
     }
 
-    // 2. Kiểm tra thuộc tính text hoặc attributedText thông qua KVC an toàn
     @try {
         id textVal = [v valueForKey:@"text"];
         if ([textVal isKindOfClass:[NSString class]]) {
@@ -92,7 +89,6 @@
         }
     } @catch (NSException *e) {}
 
-    // 3. Đệ quy qua các Subview
     for (UIView *sub in v.subviews) {
         if ([self findReactNativeKeywordInView:sub]) {
             return YES;
@@ -154,6 +150,7 @@
                 NSString *lower = [l lowercaseString];
                 CGRect boxI = [convertedBoxes[i] CGRectValue];
 
+                // 1. Quét SĐT ở mục "Mua hàng tại"
                 if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"] || [lower containsString:@"cơm"]) {
                     NSArray *pList = [self extractPhonesFromText:l];
                     for (NSString *p in pList) {
@@ -161,6 +158,7 @@
                     }
                 }
 
+                // 2. Bóc tách Phí giao hàng
                 if ([lower containsString:@"phí giao hàng"] || [lower containsString:@"giao hàng"]) {
                     NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
                     if (sameLineMatch) {
@@ -192,26 +190,51 @@
                     }
                 }
 
-                if ([lower containsString:@"khích lệ"]) {
-                    CGFloat midY_I = CGRectGetMidY(boxI);
-                    for (NSUInteger j = 0; j < strings.count; j++) {
-                        if (i == j) continue;
-                        CGRect boxJ = [convertedBoxes[j] CGRectValue];
-                        CGFloat midY_J = CGRectGetMidY(boxJ);
-                        if (boxJ.origin.x > boxI.origin.x && fabs(midY_J - midY_I) < 0.022) {
-                            NSString *valStr = strings[j];
-                            if ([valStr isEqualToString:@"0"] || [valStr containsString:@"0"]) {
-                                bonusFee = @"0đ";
-                            } else {
-                                NSTextCheckingResult *valMatch = [moneyRegex firstMatchInString:valStr options:0 range:NSMakeRange(0, valStr.length)];
-                                if (valMatch) bonusFee = [[valStr substringWithRange:valMatch.range] stringByAppendingString:@"đ"];
-                                else bonusFee = [valStr stringByAppendingString:@"đ"];
+                // 3. BÓC TÁCH PHÍ KHÍCH LỆ TÀI XẾ (ĐÃ FIX CHÍNH XÁC)
+                if ([lower containsString:@"khích lệ"] || [lower containsString:@"khich le"]) {
+                    // Nếu dính liền cùng dòng
+                    NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
+                    if (sameLineMatch) {
+                        bonusFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
+                    } else {
+                        CGFloat midY_I = CGRectGetMidY(boxI);
+                        CGFloat bestDist = 999.0;
+                        NSString *detectedBonus = nil;
+
+                        for (NSUInteger j = 0; j < strings.count; j++) {
+                            if (i == j) continue;
+                            CGRect boxJ = [convertedBoxes[j] CGRectValue];
+                            CGFloat midY_J = CGRectGetMidY(boxJ);
+
+                            // Xét các khối chữ nằm bên phải và cùng hàng (chênh lệch Y < 0.025)
+                            if (boxJ.origin.x > boxI.origin.x && fabs(midY_J - midY_I) < 0.025) {
+                                NSString *valStr = [strings[j] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                                CGFloat dist = fabs(midY_J - midY_I);
+
+                                if (dist < bestDist) {
+                                    bestDist = dist;
+                                    detectedBonus = valStr;
+                                }
                             }
-                            break;
+                        }
+
+                        if (detectedBonus) {
+                            // Kiểm tra nếu là số 0 hoặc nhận diện nhầm ký tự đơn lẻ (O, o, Q, D, -)
+                            NSString *digitsOnly = [[detectedBonus componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
+                            NSTextCheckingResult *moneyMatch = [moneyRegex firstMatchInString:detectedBonus options:0 range:NSMakeRange(0, detectedBonus.length)];
+
+                            if (moneyMatch) {
+                                bonusFee = [[detectedBonus substringWithRange:moneyMatch.range] stringByAppendingString:@"đ"];
+                            } else if (digitsOnly.length > 0 && ![digitsOnly isEqualToString:@"0"]) {
+                                bonusFee = [digitsOnly stringByAppendingString:@"đ"];
+                            } else {
+                                bonusFee = @"0đ";
+                            }
                         }
                     }
                 }
 
+                // 4. Bóc tách Ghi chú
                 if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
                     NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
                     for (NSUInteger k = i + 1; k < strings.count; k++) {
@@ -280,7 +303,6 @@ static DriverHelperVC *gDriverVC = nil;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // Lớp phủ nền cam 96pt (Mặc định ẩn 100% ở màn hình chính)
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -290,7 +312,6 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
-    // Hàng 1 (Y = 44): Nút Zalo góc phải
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
@@ -303,14 +324,12 @@ static DriverHelperVC *gDriverVC = nil;
     [self.zaloBtn addTarget:self action:@selector(openZaloDirectly) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.zaloBtn];
 
-    // Dòng Phí Ship & Khích Lệ (Y = 44)
     self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 44, sw - 120, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
     self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
-    // Hàng 2 (Y = 67): Ghi chú
     self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 67, sw - 128, 26)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
@@ -319,7 +338,6 @@ static DriverHelperVC *gDriverVC = nil;
     self.noteLabel.text = @"📌 Đang phân tích...";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
-    // Nút Gọi phụ
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.callSecondBtn.frame = CGRectMake(sw - 78, 68, 72, 20);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
@@ -406,7 +424,6 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     if (event.type == UIEventTypeTouches) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
-                // Đợi 0.3s cho React Native bridge cập nhật cây view
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC checkAndHandleState];
                 });
@@ -440,13 +457,11 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
-    // 1. Hook UIApplication sendEvent
     Class appClass = [UIApplication class];
     Method mSend = class_getInstanceMethod(appClass, @selector(sendEvent:));
     orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(mSend);
     method_setImplementation(mSend, (IMP)custom_sendEvent);
 
-    // 2. Khởi tạo Window
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
