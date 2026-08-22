@@ -2,11 +2,11 @@
 #import <Vision/Vision.h>
 #import <objc/runtime.h>
 
-#pragma mark - DATA EXTRACTION ENGINE (ZERO-SCROLL CAPTURE)
+#pragma mark - DATA EXTRACTION ENGINE (FAST FLASH-SCROLL)
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
-+ (BOOL)isReactNativeOrderDetailOpen;
++ (BOOL)isBackButtonCurrentlyVisible;
 @end
 
 @implementation DriverDataExtractor
@@ -55,7 +55,6 @@
     return mainWin;
 }
 
-// Tìm UIScrollView chính của màn hình chi tiết đơn
 + (UIScrollView *)findMainScrollView:(UIView *)view {
     if (!view) return nil;
     if ([view isKindOfClass:[UIScrollView class]]) {
@@ -71,78 +70,60 @@
     return nil;
 }
 
-// Chụp toàn bộ nội dung ngầm trong RAM (Không làm di chuyển màn hình thực tế)
-+ (UIImage *)renderFullContentInBackground:(UIWindow *)mainWin {
-    UIScrollView *sv = [self findMainScrollView:mainWin];
-    if (sv && sv.contentSize.height > sv.bounds.size.height) {
-        CGPoint savedOffset = sv.contentOffset;
-        CGRect savedFrame = sv.frame;
++ (BOOL)checkBackButtonInView:(UIView *)view {
+    if (!view || view.hidden || view.alpha < 0.1) return NO;
+
+    CGRect screenRect = [view convertRect:view.bounds toView:nil];
+    if (screenRect.origin.x <= 75.0 && screenRect.origin.y >= 30.0 && screenRect.origin.y <= 110.0 && screenRect.size.width > 10.0) {
+        NSString *acc = view.accessibilityLabel.lowercaseString;
+        NSString *cls = NSStringFromClass([view class]).lowercaseString;
         
-        UIGraphicsBeginImageContextWithOptions(sv.contentSize, NO, 0.0);
-        CGContextRef ctx = UIGraphicsGetCurrentContext();
-        
-        // Vẽ toàn bộ layer của ScrollView trải dài theo contentSize
-        [sv.layer renderInContext:ctx];
-        UIImage *fullScrollImage = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-
-        sv.contentOffset = savedOffset;
-        sv.frame = savedFrame;
-        
-        if (fullScrollImage) return fullScrollImage;
-    }
-
-    // Fallback: Chụp màn hình bình thường nếu không có ScrollView
-    UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
-    [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:NO];
-    UIImage *snap = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return snap;
-}
-
-+ (BOOL)findReactNativeKeywordInView:(UIView *)v {
-    if (!v || v.hidden || v.alpha < 0.05) return NO;
-
-    NSString *acc = v.accessibilityLabel.lowercaseString;
-    if (acc.length > 0) {
-        if ([acc containsString:@"vuốt để nhận"] || [acc containsString:@"chi tiết đơn hàng"] || [acc containsString:@"giao đến địa chỉ"] || [acc containsString:@"phí giao hàng"]) {
+        if ([acc containsString:@"back"] || [acc containsString:@"trở về"] || [acc containsString:@"quay lại"] || [cls containsString:@"button"] || [cls containsString:@"touchable"]) {
+            return YES;
+        }
+        if ([view isKindOfClass:[UIControl class]] || view.gestureRecognizers.count > 0) {
             return YES;
         }
     }
 
-    @try {
-        id textVal = [v valueForKey:@"text"];
-        if ([textVal isKindOfClass:[NSString class]]) {
-            NSString *t = [(NSString *)textVal lowercaseString];
-            if ([t containsString:@"vuốt để nhận"] || [t containsString:@"chi tiết đơn"] || [t containsString:@"phí giao hàng"]) {
-                return YES;
-            }
-        }
-    } @catch (NSException *e) {}
-
-    for (UIView *sub in v.subviews) {
-        if ([self findReactNativeKeywordInView:sub]) {
-            return YES;
-        }
+    for (UIView *sub in view.subviews) {
+        if ([self checkBackButtonInView:sub]) return YES;
     }
     return NO;
 }
 
-+ (BOOL)isReactNativeOrderDetailOpen {
++ (BOOL)isBackButtonCurrentlyVisible {
     UIWindow *win = [self getMainAppWindow];
-    return [self findReactNativeKeywordInView:win];
+    return [self checkBackButtonInView:win];
 }
 
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
     UIWindow *mainWin = [self getMainAppWindow];
     if (!mainWin) {
-        if (completion) completion(@"--", @"0đ", @"(Lỗi cửa sổ)", nil, nil);
+        if (completion) completion(@"--", @"0đ", @"(Lỗi)", nil, nil);
         return;
     }
 
-    // Thực hiện render ngầm sau 0.2s mà không làm giật màn hình
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIImage *fullSnapshot = [self renderFullContentInBackground:mainWin];
+    UIScrollView *sv = [self findMainScrollView:mainWin];
+    CGPoint originalOffset = sv ? sv.contentOffset : CGPointZero;
+
+    // 1. Nhảy nhanh xuống đáy (animated = NO) để React Native nạp phần dưới
+    if (sv && sv.contentSize.height > sv.bounds.size.height) {
+        CGPoint bottomOffset = CGPointMake(0, sv.contentSize.height - sv.bounds.size.height + sv.adjustedContentInset.bottom);
+        [sv setContentOffset:bottomOffset animated:NO];
+    }
+
+    // 2. Chờ 0.08s để frame nạp xong rồi chụp ảnh và nhảy về lại ngay
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.08 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
+        [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
+        UIImage *fullSnapshot = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+
+        // Trả vị trí ScrollView về lại ban đầu ngay lập tức
+        if (sv) {
+            [sv setContentOffset:originalOffset animated:NO];
+        }
 
         if (!fullSnapshot || !fullSnapshot.CGImage) {
             if (completion) completion(@"--", @"0đ", @"(Lỗi chụp)", nil, nil);
@@ -150,9 +131,9 @@
         }
 
         CGFloat scale = fullSnapshot.scale;
-        CGFloat cropY = fullSnapshot.size.height * 0.25;
-        CGFloat cropH = fullSnapshot.size.height * 0.60;
-        CGRect scaledRect = CGRectMake(0, cropY * scale, fullSnapshot.size.width * scale, cropH * scale);
+        CGFloat cropY = mainWin.bounds.size.height * 0.35;
+        CGFloat cropH = mainWin.bounds.size.height * 0.55;
+        CGRect scaledRect = CGRectMake(0, cropY * scale, mainWin.bounds.size.width * scale, cropH * scale);
         CGImageRef imgRef = CGImageCreateWithImageInRect(fullSnapshot.CGImage, scaledRect);
         UIImage *croppedOrderImg = [UIImage imageWithCGImage:imgRef scale:scale orientation:fullSnapshot.imageOrientation];
         CGImageRelease(imgRef);
@@ -182,6 +163,7 @@
                 NSString *lower = [l lowercaseString];
                 CGRect boxI = [convertedBoxes[i] CGRectValue];
 
+                // 1. Quét SĐT mục Mua hàng tại
                 if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"] || [lower containsString:@"cơm"]) {
                     NSArray *pList = [self extractPhonesFromText:l];
                     for (NSString *p in pList) {
@@ -189,6 +171,7 @@
                     }
                 }
 
+                // 2. Bóc tách Phí giao hàng
                 if ([lower containsString:@"phí giao hàng"] || [lower containsString:@"giao hàng"]) {
                     NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
                     if (sameLineMatch) {
@@ -220,6 +203,7 @@
                     }
                 }
 
+                // 3. Bóc tách Phí khích lệ
                 if ([lower containsString:@"khích lệ"] || [lower containsString:@"khich le"]) {
                     NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
                     if (sameLineMatch) {
@@ -237,7 +221,6 @@
                             if (boxJ.origin.x > boxI.origin.x && fabs(midY_J - midY_I) < 0.025) {
                                 NSString *valStr = [strings[j] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                                 CGFloat dist = fabs(midY_J - midY_I);
-
                                 if (dist < bestDist) {
                                     bestDist = dist;
                                     detectedBonus = valStr;
@@ -260,6 +243,7 @@
                     }
                 }
 
+                // 4. Bóc tách Ghi chú
                 if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
                     NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
                     for (NSUInteger k = i + 1; k < strings.count; k++) {
@@ -301,7 +285,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ VÀ ADVANCED HUD LOGGER
+#pragma mark - UI LỚP PHỦ NỀN CAM
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -310,15 +294,13 @@
 @property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
 @property (nonatomic, strong) UIButton *closeBtn;
-@property (nonatomic, strong) UITextView *hudTextView;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
 @property (nonatomic, assign) BOOL isShowing;
 
-- (void)checkAndHandleState;
 - (void)showAndExtract;
 - (void)hideHeader;
-- (void)appendLog:(NSString *)text;
+- (void)checkStateAfterTouch:(CGPoint)touchLoc;
 @end
 
 static DriverHelperVC *gDriverVC = nil;
@@ -330,8 +312,8 @@ static DriverHelperVC *gDriverVC = nil;
     gDriverVC = self;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
-    CGFloat sh = [UIScreen mainScreen].bounds.size.height;
 
+    // 1. Thanh cam 96pt
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -341,6 +323,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
+    // Nút Zalo
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
@@ -353,6 +336,7 @@ static DriverHelperVC *gDriverVC = nil;
     [self.zaloBtn addTarget:self action:@selector(openZaloDirectly) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.zaloBtn];
 
+    // Nút Đóng (✕)
     self.closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.closeBtn.frame = CGRectMake(sw - 96, 43, 26, 24);
     [self.closeBtn setTitle:@"✕" forState:UIControlStateNormal];
@@ -361,12 +345,14 @@ static DriverHelperVC *gDriverVC = nil;
     [self.closeBtn addTarget:self action:@selector(hideHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.closeBtn];
 
+    // Dòng Phí Ship
     self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(65, 44, sw - 165, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
     self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
+    // Dòng Ghi chú
     self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(65, 67, sw - 145, 26)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
@@ -375,6 +361,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.noteLabel.text = @"📌 Đang phân tích...";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
+    // Nút Gọi phụ
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.callSecondBtn.frame = CGRectMake(sw - 78, 68, 72, 20);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
@@ -384,43 +371,28 @@ static DriverHelperVC *gDriverVC = nil;
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
-
-    self.hudTextView = [[UITextView alloc] initWithFrame:CGRectMake(10, sh - 115, sw - 20, 48)];
-    self.hudTextView.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.85];
-    self.hudTextView.textColor = [UIColor cyanColor];
-    self.hudTextView.font = [UIFont fontWithName:@"Courier" size:10.0] ?: [UIFont systemFontOfSize:10.0];
-    self.hudTextView.editable = NO;
-    self.hudTextView.layer.cornerRadius = 6;
-    self.hudTextView.layer.borderWidth = 1;
-    self.hudTextView.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.3].CGColor;
-    self.hudTextView.text = @"[SNIFFER READY] Chạm vào màn hình để bắt log...";
-    [self.view addSubview:self.hudTextView];
 }
 
-- (void)appendLog:(NSString *)text {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSString *newText = [NSString stringWithFormat:@"%@\n> %@", self.hudTextView.text, text];
-        NSArray *lines = [newText componentsSeparatedByString:@"\n"];
-        if (lines.count > 4) {
-            lines = [lines subarrayWithRange:NSMakeRange(lines.count - 4, 4)];
-            newText = [lines componentsJoinedByString:@"\n"];
-        }
-        self.hudTextView.text = newText;
-        [UIPasteboard generalPasteboard].string = text;
-    });
-}
-
-- (void)checkAndHandleState {
-    BOOL isDetail = [DriverDataExtractor isReactNativeOrderDetailOpen];
-    if (isDetail) {
-        if (!self.isShowing) {
-            [self showAndExtract];
-        }
-    } else {
-        if (self.isShowing) {
-            [self hideHeader];
-        }
+- (void)checkStateAfterTouch:(CGPoint)touchLoc {
+    // 1. Chạm vào góc trên bên trái -> Đóng ngay
+    if (touchLoc.x <= 85.0 && touchLoc.y <= 105.0) {
+        [self hideHeader];
+        return;
     }
+
+    // 2. Chạm vào màn hình để mở đơn
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        BOOL hasBackButton = [DriverDataExtractor isBackButtonCurrentlyVisible];
+        if (hasBackButton) {
+            if (!self.isShowing) {
+                [self showAndExtract];
+            }
+        } else {
+            if (self.isShowing) {
+                [self hideHeader];
+            }
+        }
+    });
 }
 
 - (void)showAndExtract {
@@ -477,33 +449,7 @@ static DriverHelperVC *gDriverVC = nil;
 
 @end
 
-#pragma mark - DEEP EVENT HOOKING & SNIFFER
-
-static BOOL (*orig_sendAction)(id, SEL, SEL, id, id, UIEvent *);
-static BOOL custom_sendAction(UIControl *self, SEL _cmd, SEL action, id target, id sender, UIEvent *event) {
-    NSString *actName = NSStringFromSelector(action);
-    NSString *tgtName = NSStringFromClass([target class]);
-    [gDriverVC appendLog:[NSString stringWithFormat:@"Action: [%@] on %@", actName, tgtName]];
-    
-    if ([actName.lowercaseString containsString:@"back"] || [actName.lowercaseString containsString:@"pop"] || [actName.lowercaseString containsString:@"close"] || [actName.lowercaseString containsString:@"dismiss"]) {
-        [gDriverVC hideHeader];
-    }
-    return orig_sendAction(self, _cmd, action, target, sender, event);
-}
-
-static void (*orig_willRemoveSubview)(id, SEL, UIView *);
-static void custom_willRemoveSubview(UIView *self, SEL _cmd, UIView *subview) {
-    orig_willRemoveSubview(self, _cmd, subview);
-    if (![NSStringFromClass([subview class]) containsString:@"Driver"]) {
-        NSString *sName = NSStringFromClass([subview class]);
-        if (subview.bounds.size.height > 400 || [sName containsString:@"Modal"] || [sName containsString:@"Sheet"]) {
-            [gDriverVC appendLog:[NSString stringWithFormat:@"Remove Subview: %@", sName]];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [gDriverVC checkAndHandleState];
-            });
-        }
-    }
-}
+#pragma mark - HOOK TOUCH SEND EVENT
 
 static void (*orig_sendEvent)(id, SEL, UIEvent *);
 static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
@@ -512,26 +458,14 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
                 CGPoint loc = [t locationInView:nil];
-                UIView *hitV = t.view;
-                NSString *vClass = NSStringFromClass([hitV class]);
-                NSString *accLabel = hitV.accessibilityLabel ?: @"";
-
-                [gDriverVC appendLog:[NSString stringWithFormat:@"TOUCH (%.0f, %.0f) | View: %@ | Acc: '%@'", loc.x, loc.y, vClass, accLabel]];
-
-                if (loc.x <= 90.0 && loc.y <= 110.0) {
-                    [gDriverVC hideHeader];
-                }
-
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [gDriverVC checkAndHandleState];
-                });
+                [gDriverVC checkStateAfterTouch:loc];
                 break;
             }
         }
     }
 }
 
-#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (X: 0 -> 90, Y: 0 -> 110)
+#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (X: 0 -> 85, Y: 0 -> 105)
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -541,7 +475,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    if (point.x <= 90.0 && point.y <= 110.0) {
+    if (point.x <= 85.0 && point.y <= 105.0) {
         DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
         [vc hideHeader];
         return nil;
@@ -554,16 +488,6 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
-    Class ctrlClass = [UIControl class];
-    Method mAction = class_getInstanceMethod(ctrlClass, @selector(sendAction:to:forEvent:));
-    orig_sendAction = (BOOL(*)(id, SEL, SEL, id, id, UIEvent *))method_getImplementation(mAction);
-    method_setImplementation(mAction, (IMP)custom_sendAction);
-
-    Class viewClass = [UIView class];
-    Method mRemove = class_getInstanceMethod(viewClass, @selector(willRemoveSubview:));
-    orig_willRemoveSubview = (void(*)(id, SEL, UIView *))method_getImplementation(mRemove);
-    method_setImplementation(mRemove, (IMP)custom_willRemoveSubview);
-
     Class appClass = [UIApplication class];
     Method mSend = class_getInstanceMethod(appClass, @selector(sendEvent:));
     orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(mSend);
