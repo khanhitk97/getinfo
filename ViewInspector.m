@@ -1,11 +1,12 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-#pragma mark - 1. DATA EXTRACTOR TỪ RAM
+#pragma mark - 1. DATA EXTRACTOR & CROP LOGIC TỪ RAM
 
 @interface DriverDataExtractor : NSObject
 + (BOOL)hasOrderDetailKeywords;
 + (void)extractDataDirectlyFromRAM:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *secondPhone))completion;
++ (void)captureOrderDetailSection:(void(^)(UIImage *croppedImage))completion;
 @end
 
 @implementation DriverDataExtractor
@@ -193,6 +194,107 @@
     });
 }
 
+#pragma mark - LOGIC CUỘN & CẮT ĐÚNG KHỐI CHI TIẾT ĐƠN HÀNG
+
++ (UIScrollView *)findScrollViewInView:(UIView *)v {
+    if ([v isKindOfClass:[UIScrollView class]]) return (UIScrollView *)v;
+    for (UIView *sub in v.subviews) {
+        UIScrollView *found = [self findScrollViewInView:sub];
+        if (found) return found;
+    }
+    return nil;
+}
+
++ (UIView *)findViewMatchingCondition:(UIView *)v match:(BOOL(^)(NSString *text))matchBlock {
+    if (!v || v.hidden) return nil;
+    NSString *acc = v.accessibilityLabel;
+    if (acc && matchBlock(acc)) return v;
+
+    @try {
+        id t = [v valueForKey:@"text"];
+        if ([t isKindOfClass:[NSString class]] && matchBlock((NSString *)t)) return v;
+    } @catch (NSException *e) {}
+
+    for (UIView *sub in v.subviews) {
+        UIView *found = [self findViewMatchingCondition:sub match:matchBlock];
+        if (found) return found;
+    }
+    return nil;
+}
+
++ (void)captureOrderDetailSection:(void(^)(UIImage *croppedImage))completion {
+    UIWindow *mainWin = [self getMainAppWindow];
+    if (!mainWin) {
+        if (completion) completion(nil);
+        return;
+    }
+
+    UIScrollView *scrollView = [self findScrollViewInView:mainWin];
+
+    // 1. Tìm View bắt đầu: "Chi tiết đơn hàng"
+    UIView *startView = [self findViewMatchingCondition:mainWin match:^BOOL(NSString *text) {
+        NSString *lower = text.lowercaseString;
+        return [lower containsString:@"chi tiết đơn hàng"] || [lower containsString:@"chi tiết đơn"];
+    }];
+
+    // 2. Tìm View kết thúc: "Tổng ... món"
+    UIView *endView = [self findViewMatchingCondition:mainWin match:^BOOL(NSString *text) {
+        NSString *lower = text.lowercaseString;
+        return [lower containsString:@"tổng"] && [lower containsString:@"món"];
+    }];
+
+    // 3. Tự động cuộn để đưa toàn bộ phần đơn hàng vào khung nhìn
+    if (scrollView && startView) {
+        CGRect startRectInScroll = [startView convertRect:startView.bounds toView:scrollView];
+        CGFloat targetOffsetY = MAX(0, startRectInScroll.origin.y - 10.0);
+        [scrollView setContentOffset:CGPointMake(0, targetOffsetY) animated:NO];
+    }
+
+    // Đợi 0.1s cho giao diện ổn định sau cuộn rồi crop
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        CGRect cropRect = CGRectZero;
+        CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
+
+        if (startView && endView) {
+            CGRect startRect = [startView convertRect:startView.bounds toView:mainWin];
+            CGRect endRect = [endView convertRect:endView.bounds toView:mainWin];
+
+            CGFloat topY = MAX(0, startRect.origin.y - 12.0);
+            CGFloat bottomY = endRect.origin.y + endRect.size.height + 14.0;
+            CGFloat height = MAX(100.0, bottomY - topY);
+
+            cropRect = CGRectMake(12.0, topY, screenWidth - 24.0, height);
+        } else {
+            // Dự phòng nếu không bắt được mốc
+            cropRect = CGRectMake(12.0, 160.0, screenWidth - 24.0, 420.0);
+        }
+
+        // Chụp cửa sổ gốc
+        UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, [UIScreen mainScreen].scale);
+        [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
+        UIImage *fullScreen = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+
+        if (!fullScreen) {
+            if (completion) completion(nil);
+            return;
+        }
+
+        // Cắt đúng hình chữ nhật chứa danh sách món
+        CGFloat scale = fullScreen.scale;
+        CGRect scaledCropRect = CGRectMake(cropRect.origin.x * scale,
+                                           cropRect.origin.y * scale,
+                                           cropRect.size.width * scale,
+                                           cropRect.size.height * scale);
+
+        CGImageRef imageRef = CGImageCreateWithImageInRect(fullScreen.CGImage, scaledCropRect);
+        UIImage *croppedImage = [UIImage imageWithCGImage:imageRef scale:fullScreen.scale orientation:fullScreen.imageOrientation];
+        CGImageRelease(imageRef);
+
+        if (completion) completion(croppedImage);
+    });
+}
+
 @end
 
 #pragma mark - 2. GIAO DIỆN THANH OVERLAY
@@ -240,10 +342,10 @@ static DriverHelperVC *gDriverVC = nil;
     self.backIconLabel.userInteractionEnabled = NO;
     [self.orangeBar addSubview:self.backIconLabel];
 
-    // 3. Nút Zalo (Ngang hàng với nút Back: Y = 44, H = 34)
+    // 3. Nút Zalo (Ngang hàng nút Back: Y = 44, H = 34)
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 80, 44, 72, 34);
-    self.zaloBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.41 blue:1.0 alpha:0.9]; // Màu xanh Zalo
+    self.zaloBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.41 blue:1.0 alpha:0.9];
     [self.zaloBtn setTitle:@"💬 Zalo" forState:UIControlStateNormal];
     [self.zaloBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.zaloBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
@@ -253,7 +355,7 @@ static DriverHelperVC *gDriverVC = nil;
     [self.zaloBtn addTarget:self action:@selector(captureAndShareZalo) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeBar addSubview:self.zaloBtn];
 
-    // Dòng Phí Ship & Khích Lệ (X = 50 -> trước nút Zalo)
+    // Dòng Phí Ship & Khích Lệ
     self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 44, sw - 136, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
@@ -269,7 +371,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.noteLabel.text = @"📌 Đang đọc ghi chú...";
     [self.orangeBar addSubview:self.noteLabel];
 
-    // Nút Gọi Phụ (Nếu có số phụ)
+    // Nút Gọi Phụ
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.callSecondBtn.frame = CGRectMake(sw - 80, 10, 72, 24);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
@@ -302,14 +404,13 @@ static DriverHelperVC *gDriverVC = nil;
         self.feeLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@ | 🎁 Khích lệ: %@", shipFee, bonusFee];
         self.noteLabel.text = [NSString stringWithFormat:@"📌 Ghi chú: %@", note];
 
-        // Kiểm tra tiền khích lệ >= 10.000đ để đổi màu
         NSString *digitsBonus = [[bonusFee componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
         long long bonusValue = [digitsBonus longLongValue];
 
         if (bonusValue >= 10000) {
-            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:1.0]; // Xanh lá
+            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:1.0];
         } else {
-            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0]; // Cam
+            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
         }
 
         if (secondPhone.length > 0) {
@@ -327,27 +428,12 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeBar.hidden = YES;
 }
 
-// Chụp toàn bộ màn hình đơn gốc và mở bảng chia sẻ
+// Bấm Zalo: Cắt đúng phần chi tiết đơn và mở bảng chia sẻ (Không ẩn thanh bar)
 - (void)captureAndShareZalo {
-    UIWindow *mainWin = [DriverDataExtractor getMainAppWindow];
-    if (!mainWin) return;
+    [DriverDataExtractor captureOrderDetailSection:^(UIImage *croppedImage) {
+        if (!croppedImage) return;
 
-    // 1. Tạm ẩn thanh overlay để ảnh chụp sạch
-    self.orangeBar.hidden = YES;
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
-        [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
-        UIImage *screenshot = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-
-        // 2. Hiện lại thanh overlay
-        self.orangeBar.hidden = NO;
-
-        if (!screenshot) return;
-
-        // 3. Mở Share Sheet mặc định của iOS
-        UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[screenshot] applicationActivities:nil];
+        UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[croppedImage] applicationActivities:nil];
         
         if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
             activityVC.popoverPresentationController.sourceView = self.zaloBtn;
@@ -355,7 +441,7 @@ static DriverHelperVC *gDriverVC = nil;
         }
 
         [self presentViewController:activityVC animated:YES completion:nil];
-    });
+    }];
 }
 
 - (void)makeCallSecond {
@@ -394,7 +480,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
                     break;
                 }
 
-                // 3. Các cú chạm khác -> Tự động đồng bộ UI sau 0.3s
+                // 3. Tự động đồng bộ UI sau 0.3s
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC syncUIState];
                 });
