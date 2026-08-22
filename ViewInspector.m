@@ -5,6 +5,7 @@
 
 @interface DriverDataExtractor : NSObject
 + (BOOL)isOrderDetailScreenActive;
++ (BOOL)isHomeScreenActive;
 + (void)extractDataDirectlyFromRAM:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *secondPhone))completion;
 @end
 
@@ -28,15 +29,48 @@
     return mainWin;
 }
 
-// 1. Kiểm tra màn hình chi tiết đơn hàng đang mở (dựa trên từ khóa đặc trưng)
+// Kiểm tra Màn hình chính (Xuất hiện các mục dịch vụ hoặc tab bar)
++ (BOOL)checkHomeInView:(UIView *)v {
+    if (!v || v.hidden || v.alpha < 0.1) return NO;
+
+    NSString *acc = v.accessibilityLabel.lowercaseString;
+    if ([acc containsString:@"ăn uống"] || [acc containsString:@"an uong"] || 
+        [acc containsString:@"xe ôm"] || [acc containsString:@"xe om"]) {
+        return YES;
+    }
+
+    @try {
+        id t = [v valueForKey:@"text"];
+        if ([t isKindOfClass:[NSString class]]) {
+            NSString *str = [(NSString *)t lowercaseString];
+            if ([str containsString:@"ăn uống"] || [str containsString:@"an uong"] || 
+                [str containsString:@"xe ôm"] || [str containsString:@"xe om"]) {
+                return YES;
+            }
+        }
+    } @catch (NSException *e) {}
+
+    for (UIView *sub in v.subviews) {
+        if (![NSStringFromClass([sub class]) containsString:@"Driver"]) {
+            if ([self checkHomeInView:sub]) return YES;
+        }
+    }
+    return NO;
+}
+
++ (BOOL)isHomeScreenActive {
+    UIWindow *win = [self getMainAppWindow];
+    return [self checkHomeInView:win];
+}
+
+// Kiểm tra Màn hình chi tiết đơn hàng
 + (BOOL)checkOrderDetailInView:(UIView *)v {
     if (!v || v.hidden || v.alpha < 0.05) return NO;
 
     NSString *acc = v.accessibilityLabel.lowercaseString;
     if ([acc containsString:@"vuốt để nhận"] || 
         [acc containsString:@"thông tin đơn trước khi nhận"] || 
-        [acc containsString:@"phí giao hàng"] || 
-        [acc containsString:@"chi tiết đơn"]) {
+        [acc containsString:@"phí giao hàng"]) {
         return YES;
     }
 
@@ -62,10 +96,11 @@
 
 + (BOOL)isOrderDetailScreenActive {
     UIWindow *win = [self getMainAppWindow];
+    // Nếu màn hình chính đang hiển thị thì chắc chắn không phải chi tiết đơn
+    if ([self isHomeScreenActive]) return NO;
     return [self checkOrderDetailInView:win];
 }
 
-// 2. Thu thập danh sách text của toàn bộ RCTTextView theo thứ tự
 + (void)collectRCTTexts:(UIView *)v list:(NSMutableArray<NSString *> *)list {
     if (!v || v.hidden || v.alpha < 0.05) return;
 
@@ -284,8 +319,13 @@ static DriverHelperVC *gDriverVC = nil;
     [self.orangeBar addSubview:self.callSecondBtn];
 }
 
-// Đồng bộ trạng thái giao diện: Mở đơn -> Hiện & Đọc; Thoát đơn -> Ẩn
 - (void)syncUIState {
+    BOOL isHome = [DriverDataExtractor isHomeScreenActive];
+    if (isHome) {
+        if (self.isShowing) [self hideHeader];
+        return;
+    }
+
     BOOL isOrderOpen = [DriverDataExtractor isOrderDetailScreenActive];
     if (isOrderOpen) {
         if (!self.isShowing) {
@@ -342,7 +382,7 @@ static DriverHelperVC *gDriverVC = nil;
 
 @end
 
-#pragma mark - 3. HOOK SEND EVENT TỰ ĐỘNG THEO DÕI TRẠNG THÁI
+#pragma mark - 3. HOOK SEND EVENT (XỬ LÝ CHẠM ĐÓNG / MỞ TỨC THÌ)
 
 static void (*orig_sendEvent)(id, SEL, UIEvent *);
 static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
@@ -350,8 +390,35 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     if (event.type == UIEventTypeTouches) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
-                // Bất kể chạm vào đâu, sau 0.35s tự động kiểm tra xem đang ở màn hình nào
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                CGPoint loc = [t locationInView:nil];
+                UIView *hitV = t.view;
+                NSString *acc = hitV.accessibilityLabel ?: @"";
+                NSString *vClass = NSStringFromClass([hitV class]);
+
+                // 1. Nếu chạm nút Trở về (<) hoặc Alert quay lại -> ẨN NGAY LẬP TỨC
+                if ([vClass containsString:@"RCTImageView"] && loc.x <= 80.0 && loc.y <= 100.0) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [gDriverVC hideHeader];
+                    });
+                    break;
+                }
+                if ([acc containsString:@"Quay lại"] || [acc containsString:@"danh sách đơn"]) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [gDriverVC hideHeader];
+                    });
+                    break;
+                }
+
+                // 2. Nếu chạm vào các Tab bar đáy màn hình (Đơn hàng, Thống kê, Thông báo, Tài khoản) -> ẨN NGAY
+                if (loc.y >= [UIScreen mainScreen].bounds.size.height - 80.0) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [gDriverVC hideHeader];
+                    });
+                    break;
+                }
+
+                // 3. Đồng bộ trạng thái sau 0.3s cho các tương tác khác
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC syncUIState];
                 });
                 break;
@@ -360,7 +427,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     }
 }
 
-#pragma mark - 4. OVERLAY WINDOW HIT TEST (CHỈ NHẬN NÚT BẤM, CHO PHÉP XUYÊN QUA)
+#pragma mark - 4. OVERLAY WINDOW HIT TEST
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -369,12 +436,11 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hitView = [super hitTest:point withEvent:event];
     
-    // Nếu chạm vào nền root hoặc phần trống của thanh cam -> Xuyên chạm xuống app gốc
     DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
     if (hitView == self.rootViewController.view || hitView == vc.orangeBar || hitView == vc.feeLabel || hitView == vc.noteLabel) {
         return nil; 
     }
-    return hitView; // Chỉ giữ lại tương tác trên nút Zalo, Đóng, Gọi phụ
+    return hitView;
 }
 @end
 
