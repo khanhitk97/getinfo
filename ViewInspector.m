@@ -1,11 +1,11 @@
 #import <UIKit/UIKit.h>
 #import <Vision/Vision.h>
+#import <objc/runtime.h>
 
 #pragma mark - DATA EXTRACTION ENGINE
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
-+ (void)detectCurrentScreenHeader:(void(^)(BOOL isMainScreen))completion;
 @end
 
 @implementation DriverDataExtractor
@@ -66,57 +66,6 @@
     }
     if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
     return mainWin;
-}
-
-// Kiểm tra chữ trên dải cam trên cùng
-+ (void)detectCurrentScreenHeader:(void(^)(BOOL isMainScreen))completion {
-    UIWindow *win = [self getMainAppWindow];
-    if (!win) {
-        if (completion) completion(YES);
-        return;
-    }
-
-    CGFloat sw = win.bounds.size.width;
-    CGRect headerCropRect = CGRectMake(35, 42, sw - 70, 48);
-
-    UIGraphicsBeginImageContextWithOptions(headerCropRect.size, NO, 0.0);
-    CGContextRef ctx = UIGraphicsGetCurrentContext();
-    CGContextTranslateCTM(ctx, -headerCropRect.origin.x, -headerCropRect.origin.y);
-    [win.layer renderInContext:ctx];
-    UIImage *headerImg = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-
-    if (!headerImg || !headerImg.CGImage) {
-        if (completion) completion(YES);
-        return;
-    }
-
-    VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
-        BOOL isMain = NO;
-
-        for (VNRecognizedTextObservation *obs in request.results) {
-            VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-            if (top) {
-                NSString *txt = [top.string lowercaseString];
-                
-                // NẾU CÓ CHỮ "ĐƠN HÀNG" -> ĐANG Ở MÀN HÌNH CHÍNH
-                if ([txt containsString:@"đơn hàng"] || [txt containsString:@"don hang"] || [txt containsString:@"các đơn"]) {
-                    isMain = YES;
-                    break;
-                }
-            }
-        }
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(isMain);
-        });
-    }];
-
-    req.recognitionLevel = VNRequestTextRecognitionLevelFast;
-    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:headerImg.CGImage options:@{}];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        [handler performRequests:@[req] error:nil];
-    });
 }
 
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
@@ -270,7 +219,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ NỀN CAM (CHUẨN TỰ ĐỘNG)
+#pragma mark - UI LỚP PHỦ NỀN CAM
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -280,22 +229,22 @@
 @property (nonatomic, strong) UIButton *zaloBtn;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
-@property (nonatomic, assign) BOOL isShowing;
-@property (nonatomic, strong) NSTimer *monitorTimer;
 
-- (void)startHeaderMonitor;
-- (void)triggerExtraction;
+- (void)showAndExtract;
 - (void)hideHeader;
 @end
+
+static DriverHelperVC *gDriverVC = nil;
 
 @implementation DriverHelperVC
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    gDriverVC = self;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // Lớp phủ nền cam 96pt (Mặc định ẩn hoàn toàn ở màn hình chính)
+    // Lớp phủ nền cam 96pt (Mặc định ẨN HOÀN TOÀN)
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -331,7 +280,7 @@
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.noteLabel.numberOfLines = 2;
     self.noteLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.noteLabel.text = @"📌 Đang phân tích đơn...";
+    self.noteLabel.text = @"📌 Đang phân tích...";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
     // Nút Gọi phụ
@@ -344,33 +293,9 @@
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
-
-    [self startHeaderMonitor];
 }
 
-- (void)startHeaderMonitor {
-    self.monitorTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self selector:@selector(checkHeaderState) userInfo:nil repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:self.monitorTimer forMode:NSRunLoopCommonModes];
-}
-
-- (void)checkHeaderState {
-    [DriverDataExtractor detectCurrentScreenHeader:^(BOOL isMainScreen) {
-        if (isMainScreen) {
-            // ĐANG Ở MÀN HÌNH CHÍNH (CÓ CHỮ "ĐƠN HÀNG") -> PHẢI ẨN THANH CAM
-            if (self.isShowing) {
-                [self hideHeader];
-            }
-        } else {
-            // ĐÃ VÀO CHI TIẾT ĐƠN (TIÊU ĐỀ LÀ TÊN QUÁN, MẤT CHỮ "ĐƠN HÀNG") -> KÍCH HOẠT NGAY
-            if (!self.isShowing) {
-                [self triggerExtraction];
-            }
-        }
-    }];
-}
-
-- (void)triggerExtraction {
-    self.isShowing = YES;
+- (void)showAndExtract {
     self.orangeHeaderBar.hidden = NO;
     self.orangeHeaderBar.alpha = 0.6;
     self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
@@ -397,7 +322,6 @@
 }
 
 - (void)hideHeader {
-    self.isShowing = NO;
     self.orangeHeaderBar.hidden = YES;
 }
 
@@ -423,6 +347,40 @@
 
 @end
 
+#pragma mark - HOOK NAVIGATION DIRECTLY (CHẠY 100% KHI CHUYỂN TRANG)
+
+static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
+static void custom_pushVC(UINavigationController *self, SEL _cmd, UIViewController *viewController, BOOL animated) {
+    orig_pushVC(self, _cmd, viewController, animated);
+    // Khi Push sang màn hình mới (tức là mở chi tiết đơn)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [gDriverVC showAndExtract];
+    });
+}
+
+static UIViewController *(*orig_popVC)(id, SEL, BOOL);
+static UIViewController *custom_popVC(UINavigationController *self, SEL _cmd, BOOL animated) {
+    // Khi Pop quay lại danh sách
+    [gDriverVC hideHeader];
+    return orig_popVC(self, _cmd, animated);
+}
+
+// Hook UIView didMoveToSuperview (Bắt cả Bottom Sheet / Modal)
+static void (*orig_didMoveToSuperview)(id, SEL);
+static void custom_didMoveToSuperview(UIView *self, SEL _cmd) {
+    orig_didMoveToSuperview(self, _cmd);
+    
+    // Nếu có View mới xuất hiện chứa chiều cao lớn hơn 500pt (Bottom Sheet chi tiết đơn vừa bung lên)
+    if (self.superview && self.bounds.size.height > 500 && ![NSStringFromClass([self class]) containsString:@"Driver"]) {
+        NSString *cls = NSStringFromClass([self class]);
+        if ([cls containsString:@"Sheet"] || [cls containsString:@"Detail"] || [cls containsString:@"Order"] || [cls containsString:@"Modal"] || [cls containsString:@"Container"]) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [gDriverVC showAndExtract];
+            });
+        }
+    }
+}
+
 #pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK
 
 @interface DriverOverlayWindow : UIWindow
@@ -433,11 +391,10 @@
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Khi bấm nút Trở về (<) góc trái (X: 0 -> 45, Y: 0 -> 75)
+    // Khi chạm vào vùng nút Trở về (<) góc trái (X: 0 -> 45, Y: 0 -> 75)
     if (point.x <= 45.0 && point.y <= 75.0) {
-        DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
-        [vc hideHeader];
-        return nil;
+        [gDriverVC hideHeader]; // Thu dải cam ngay lập tức
+        return nil; // Xuyên touch xuống app gốc để pop về màn chính
     }
     return hitView;
 }
@@ -447,6 +404,24 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
+    // 1. Hook UINavigationController
+    Class navClass = [UINavigationController class];
+    
+    Method mPush = class_getInstanceMethod(navClass, @selector(pushViewController:animated:));
+    orig_pushVC = (void(*)(id, SEL, UIViewController *, BOOL))method_getImplementation(mPush);
+    method_setImplementation(mPush, (IMP)custom_pushVC);
+
+    Method mPop = class_getInstanceMethod(navClass, @selector(popViewControllerAnimated:));
+    orig_popVC = (UIViewController *(*)(id, SEL, BOOL))method_getImplementation(mPop);
+    method_setImplementation(mPop, (IMP)custom_popVC);
+
+    // 2. Hook UIView didMoveToSuperview
+    Class viewClass = [UIView class];
+    Method mMove = class_getInstanceMethod(viewClass, @selector(didMoveToSuperview));
+    orig_didMoveToSuperview = (void(*)(id, SEL))method_getImplementation(mMove);
+    method_setImplementation(mMove, (IMP)custom_didMoveToSuperview);
+
+    // 3. Khởi tạo Window
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
