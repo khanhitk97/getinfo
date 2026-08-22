@@ -2,6 +2,90 @@
 #import <Vision/Vision.h>
 #import <objc/runtime.h>
 
+#pragma mark - DIAGNOSTIC & LOGGING UTILITY
+
+@interface DriverDiagnostic : NSObject
++ (NSString *)dumpCurrentHierarchy;
++ (UIViewController *)topViewController;
+@end
+
+@implementation DriverDiagnostic
+
++ (UIViewController *)topViewControllerWithRoot:(UIViewController *)root {
+    if ([root isKindOfClass:[UINavigationController class]]) {
+        return [self topViewControllerWithRoot:[(UINavigationController *)root visibleViewController]];
+    }
+    if ([root isKindOfClass:[UITabBarController class]]) {
+        return [self topViewControllerWithRoot:[(UITabBarController *)root selectedViewController]];
+    }
+    if (root.presentedViewController) {
+        return [self topViewControllerWithRoot:root.presentedViewController];
+    }
+    return root;
+}
+
++ (UIViewController *)topViewController {
+    UIWindow *mainWin = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+            if ([s isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                    if (!w.isHidden && ![NSStringFromClass([w class]) containsString:@"DriverOverlayWindow"]) {
+                        mainWin = w;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
+    return [self topViewControllerWithRoot:mainWin.rootViewController];
+}
+
++ (void)dumpView:(UIView *)view indent:(int)indent output:(NSMutableString *)outStr {
+    if (!view) return;
+    for (int i = 0; i < indent; i++) [outStr appendString:@"  "];
+    [outStr appendFormat:@"[%@] frame=(%.1f, %.1f, %.1f, %.1f)", NSStringFromClass([view class]), view.frame.origin.x, view.frame.origin.y, view.frame.size.width, view.frame.size.height];
+    
+    if ([view isKindOfClass:[UILabel class]]) {
+        [outStr appendFormat:@" text=\"%@\"", [(UILabel *)view text]];
+    } else if ([view isKindOfClass:[UIButton class]]) {
+        [outStr appendFormat:@" title=\"%@\"", [(UIButton *)view titleForState:UIControlStateNormal]];
+    }
+    [outStr appendString:@"\n"];
+
+    for (UIView *sub in view.subviews) {
+        if (![NSStringFromClass([sub class]) containsString:@"Driver"]) {
+            [self dumpView:sub indent:indent + 1 output:outStr];
+        }
+    }
+}
+
++ (NSString *)dumpCurrentHierarchy {
+    UIWindow *mainWin = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+            if ([s isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                    if (!w.isHidden && ![NSStringFromClass([w class]) containsString:@"DriverOverlayWindow"]) {
+                        mainWin = w;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
+
+    NSMutableString *outStr = [NSMutableString string];
+    UIViewController *topVC = [self topViewController];
+    [outStr appendFormat:@"=== TOP VC: %@ ===\n", NSStringFromClass([topVC class])];
+    [self dumpView:mainWin indent:0 output:outStr];
+    return outStr;
+}
+
+@end
+
 #pragma mark - DATA EXTRACTION ENGINE
 
 @interface DriverDataExtractor : NSObject
@@ -116,7 +200,6 @@
                 NSString *lower = [l lowercaseString];
                 CGRect boxI = [convertedBoxes[i] CGRectValue];
 
-                // 1. Quét SĐT ở mục "Mua hàng tại"
                 if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"] || [lower containsString:@"cơm"]) {
                     NSArray *pList = [self extractPhonesFromText:l];
                     for (NSString *p in pList) {
@@ -124,7 +207,6 @@
                     }
                 }
 
-                // 2. Bóc tách Phí giao hàng
                 if ([lower containsString:@"phí giao hàng"] || [lower containsString:@"giao hàng"]) {
                     NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
                     if (sameLineMatch) {
@@ -156,7 +238,6 @@
                     }
                 }
 
-                // 3. Bóc tách Phí khích lệ
                 if ([lower containsString:@"khích lệ"]) {
                     CGFloat midY_I = CGRectGetMidY(boxI);
                     for (NSUInteger j = 0; j < strings.count; j++) {
@@ -177,7 +258,6 @@
                     }
                 }
 
-                // 4. Bóc tách Ghi chú (nhiều dòng)
                 if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
                     NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
                     for (NSUInteger k = i + 1; k < strings.count; k++) {
@@ -219,7 +299,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ NỀN CAM
+#pragma mark - UI LỚP PHỦ VÀ BỘ DEBUG HUD
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -227,11 +307,14 @@
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
+@property (nonatomic, strong) UIButton *debugBtn;
+@property (nonatomic, strong) UILabel *hudLogLabel;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
 
 - (void)showAndExtract;
 - (void)hideHeader;
+- (void)logEvent:(NSString *)text;
 @end
 
 static DriverHelperVC *gDriverVC = nil;
@@ -243,8 +326,9 @@ static DriverHelperVC *gDriverVC = nil;
     gDriverVC = self;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
+    CGFloat sh = [UIScreen mainScreen].bounds.size.height;
 
-    // Lớp phủ nền cam 96pt (Mặc định ẨN HOÀN TOÀN)
+    // 1. Lớp phủ nền cam 96pt
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -254,7 +338,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
-    // Hàng 1 (Y = 44): Nút Zalo góc phải
+    // Nút Zalo góc phải
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
@@ -293,6 +377,52 @@ static DriverHelperVC *gDriverVC = nil;
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
+
+    // 2. NÚT CHẨN ĐOÁN (DEBUG INSPECT BUTTON Ở GÓC DƯỚI BẢN ĐỒ)
+    self.debugBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.debugBtn.frame = CGRectMake(sw - 85, sh - 140, 78, 30);
+    self.debugBtn.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.7];
+    [self.debugBtn setTitle:@"🔍 Soi View" forState:UIControlStateNormal];
+    [self.debugBtn setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];
+    self.debugBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.0];
+    self.debugBtn.layer.cornerRadius = 15;
+    self.debugBtn.layer.borderWidth = 1;
+    self.debugBtn.layer.borderColor = [UIColor cyanColor].CGColor;
+    [self.debugBtn addTarget:self action:@selector(onInspectTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.debugBtn];
+
+    // 3. HUD LOG NHỎ TRÊN MÀN HÌNH
+    self.hudLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, sh - 110, sw - 20, 20)];
+    self.hudLogLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.65];
+    self.hudLogLabel.textColor = [UIColor whiteColor];
+    self.hudLogLabel.font = [UIFont systemFontOfSize:10.0];
+    self.hudLogLabel.text = @" HUD: Dylib Sẵn Sàng...";
+    self.hudLogLabel.layer.cornerRadius = 4;
+    self.hudLogLabel.clipsToBounds = YES;
+    [self.view addSubview:self.hudLogLabel];
+}
+
+- (void)logEvent:(NSString *)text {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.hudLogLabel.text = [NSString stringWithFormat:@" %@", text];
+    });
+}
+
+- (void)onInspectTapped {
+    NSString *dump = [DriverDiagnostic dumpCurrentHierarchy];
+    [UIPasteboard generalPasteboard].string = dump;
+
+    UIViewController *top = [DriverDiagnostic topViewController];
+    NSString *topName = NSStringFromClass([top class]);
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chẩn Đoán View"
+                                                                   message:[NSString stringWithFormat:@"Top VC: %@\n(Đã copy toàn bộ cây View vào Clipboard!)", topName]
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithAction:@"Bật Test Thanh Cam" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [self showAndExtract];
+    }]];
+    [alert addAction:[UIAlertAction actionWithAction:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)showAndExtract {
@@ -347,41 +477,29 @@ static DriverHelperVC *gDriverVC = nil;
 
 @end
 
-#pragma mark - HOOK NAVIGATION DIRECTLY (CHẠY 100% KHI CHUYỂN TRANG)
+#pragma mark - GLOBAL CONTROLLER & TOUCH HOOK CHẨN ĐOÁN
 
-static void (*orig_pushVC)(id, SEL, UIViewController *, BOOL);
-static void custom_pushVC(UINavigationController *self, SEL _cmd, UIViewController *viewController, BOOL animated) {
-    orig_pushVC(self, _cmd, viewController, animated);
-    // Khi Push sang màn hình mới (tức là mở chi tiết đơn)
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [gDriverVC showAndExtract];
-    });
+static void (*orig_presentVC)(id, SEL, UIViewController *, BOOL, id);
+static void custom_presentVC(UIViewController *self, SEL _cmd, UIViewController *vcToPresent, BOOL flag, id completion) {
+    [gDriverVC logEvent:[NSString stringWithFormat:@"Present: %@", NSStringFromClass([vcToPresent class])]];
+    orig_presentVC(self, _cmd, vcToPresent, flag, completion);
 }
 
-static UIViewController *(*orig_popVC)(id, SEL, BOOL);
-static UIViewController *custom_popVC(UINavigationController *self, SEL _cmd, BOOL animated) {
-    // Khi Pop quay lại danh sách
-    [gDriverVC hideHeader];
-    return orig_popVC(self, _cmd, animated);
-}
-
-// Hook UIView didMoveToSuperview (Bắt cả Bottom Sheet / Modal)
-static void (*orig_didMoveToSuperview)(id, SEL);
-static void custom_didMoveToSuperview(UIView *self, SEL _cmd) {
-    orig_didMoveToSuperview(self, _cmd);
-    
-    // Nếu có View mới xuất hiện chứa chiều cao lớn hơn 500pt (Bottom Sheet chi tiết đơn vừa bung lên)
-    if (self.superview && self.bounds.size.height > 500 && ![NSStringFromClass([self class]) containsString:@"Driver"]) {
-        NSString *cls = NSStringFromClass([self class]);
-        if ([cls containsString:@"Sheet"] || [cls containsString:@"Detail"] || [cls containsString:@"Order"] || [cls containsString:@"Modal"] || [cls containsString:@"Container"]) {
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [gDriverVC showAndExtract];
-            });
+static void (*orig_sendEvent)(id, SEL, UIEvent *);
+static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
+    orig_sendEvent(self, _cmd, event);
+    if (event.type == UIEventTypeTouches) {
+        for (UITouch *t in event.allTouches) {
+            if (t.phase == UITouchPhaseEnded) {
+                UIViewController *top = [DriverDiagnostic topViewController];
+                [gDriverVC logEvent:[NSString stringWithFormat:@"Touch: TopVC = %@", NSStringFromClass([top class])]];
+                break;
+            }
         }
     }
 }
 
-#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK
+#pragma mark - ENTRY POINT & HIT-TEST
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -391,10 +509,11 @@ static void custom_didMoveToSuperview(UIView *self, SEL _cmd) {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Khi chạm vào vùng nút Trở về (<) góc trái (X: 0 -> 45, Y: 0 -> 75)
+    // Đục lỗ góc trái (X: 0 -> 45, Y: 0 -> 75) cho nút Trở về (<)
     if (point.x <= 45.0 && point.y <= 75.0) {
-        [gDriverVC hideHeader]; // Thu dải cam ngay lập tức
-        return nil; // Xuyên touch xuống app gốc để pop về màn chính
+        DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
+        [vc hideHeader];
+        return nil;
     }
     return hitView;
 }
@@ -404,24 +523,19 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
-    // 1. Hook UINavigationController
-    Class navClass = [UINavigationController class];
-    
-    Method mPush = class_getInstanceMethod(navClass, @selector(pushViewController:animated:));
-    orig_pushVC = (void(*)(id, SEL, UIViewController *, BOOL))method_getImplementation(mPush);
-    method_setImplementation(mPush, (IMP)custom_pushVC);
+    // 1. Hook presentViewController:animated:completion:
+    Class vcClass = [UIViewController class];
+    Method mPresent = class_getInstanceMethod(vcClass, @selector(presentViewController:animated:completion:));
+    orig_presentVC = (void(*)(id, SEL, UIViewController *, BOOL, id))method_getImplementation(mPresent);
+    method_setImplementation(mPresent, (IMP)custom_presentVC);
 
-    Method mPop = class_getInstanceMethod(navClass, @selector(popViewControllerAnimated:));
-    orig_popVC = (UIViewController *(*)(id, SEL, BOOL))method_getImplementation(mPop);
-    method_setImplementation(mPop, (IMP)custom_popVC);
+    // 2. Hook UIApplication sendEvent:
+    Class appClass = [UIApplication class];
+    Method mSend = class_getInstanceMethod(appClass, @selector(sendEvent:));
+    orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(mSend);
+    method_setImplementation(mSend, (IMP)custom_sendEvent);
 
-    // 2. Hook UIView didMoveToSuperview
-    Class viewClass = [UIView class];
-    Method mMove = class_getInstanceMethod(viewClass, @selector(didMoveToSuperview));
-    orig_didMoveToSuperview = (void(*)(id, SEL))method_getImplementation(mMove);
-    method_setImplementation(mMove, (IMP)custom_didMoveToSuperview);
-
-    // 3. Khởi tạo Window
+    // 3. Khởi tạo Overlay Window
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
