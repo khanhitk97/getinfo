@@ -87,13 +87,16 @@
 
             VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
                 NSMutableArray<NSString *> *strings = [NSMutableArray array];
-                NSMutableArray<NSValue *> *boxes = [NSMutableArray array];
+                NSMutableArray<NSValue *> *convertedBoxes = [NSMutableArray array];
 
                 for (VNRecognizedTextObservation *obs in request.results) {
                     VNRecognizedText *top = [[obs topCandidates:1] firstObject];
                     if (top) {
                         [strings addObject:top.string];
-                        [boxes addObject:[NSValue valueWithCGRect:obs.boundingBox]];
+                        // Quy đổi hệ toạ độ Vision (Bottom-Left) sang UIKit (Top-Left)
+                        CGRect vBox = obs.boundingBox;
+                        CGRect uiBox = CGRectMake(vBox.origin.x, 1.0 - vBox.origin.y - vBox.size.height, vBox.size.width, vBox.size.height);
+                        [convertedBoxes addObject:[NSValue valueWithCGRect:uiBox]];
                     }
                 }
 
@@ -101,68 +104,81 @@
                 __block NSString *bonusFee = @"0đ";
                 __block NSString *note = @"Không có ghi chú";
                 NSMutableArray<NSString *> *shopPhones = [NSMutableArray array];
+                NSRegularExpression *moneyRegex = [NSRegularExpression regularExpressionWithPattern:@"[0-9]{1,3}(?:\\.[0-9]{3})+" options:0 error:nil];
 
                 for (NSUInteger i = 0; i < strings.count; i++) {
                     NSString *l = strings[i];
                     NSString *lower = [l lowercaseString];
-                    CGRect boxI = [boxes[i] CGRectValue];
+                    CGRect boxI = [convertedBoxes[i] CGRectValue];
 
                     // 1. Quét SĐT ở mục "Mua hàng tại"
-                    if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"]) {
+                    if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"]) {
                         NSArray *pList = [self extractPhonesFromText:l];
                         for (NSString *p in pList) {
                             if (![shopPhones containsObject:p]) [shopPhones addObject:p];
                         }
                     }
 
-                    // 2. Bóc tách Phí giao hàng theo Bounding Box (Cùng hàng Y, nằm bên phải)
-                    if ([lower containsString:@"phí giao hàng"]) {
-                        // Kiểm tra nếu số tiền nằm dính chung dòng
-                        NSRegularExpression *moneyRegex = [NSRegularExpression regularExpressionWithPattern:@"[0-9]{1,3}(?:\\.[0-9]{3})+" options:0 error:nil];
+                    // 2. BÓC TÁCH PHÍ GIAO HÀNG (SHIP)
+                    if ([lower containsString:@"phí giao hàng"] || [lower containsString:@"giao hàng"]) {
+                        // Trường hợp A: Số tiền dính liền trên cùng 1 chuỗi
                         NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
                         if (sameLineMatch) {
                             shipFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
                         } else {
-                            // Tìm khối text nằm cùng cao độ Y và ở bên phải
+                            // Trường hợp B: Quét toạ độ ngang chuẩn UIKit (midY chênh lệch < 0.035)
+                            CGFloat midY_I = CGRectGetMidY(boxI);
                             for (NSUInteger j = 0; j < strings.count; j++) {
                                 if (i == j) continue;
-                                CGRect boxJ = [boxes[j] CGRectValue];
-                                if (fabs(boxJ.origin.y - boxI.origin.y) < 0.035 && boxJ.origin.x > boxI.origin.x) {
+                                CGRect boxJ = [convertedBoxes[j] CGRectValue];
+                                CGFloat midY_J = CGRectGetMidY(boxJ);
+                                if (fabs(midY_J - midY_I) < 0.035 && boxJ.origin.x > boxI.origin.x) {
                                     NSString *valStr = strings[j];
                                     NSTextCheckingResult *valMatch = [moneyRegex firstMatchInString:valStr options:0 range:NSMakeRange(0, valStr.length)];
                                     if (valMatch) {
                                         shipFee = [[valStr substringWithRange:valMatch.range] stringByAppendingString:@"đ"];
+                                        break;
                                     } else {
                                         NSString *digits = [[valStr componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
-                                        if (digits.length >= 3) shipFee = [digits stringByAppendingString:@"đ"];
+                                        if (digits.length >= 3) {
+                                            shipFee = [digits stringByAppendingString:@"đ"];
+                                            break;
+                                        }
                                     }
-                                    break;
+                                }
+                            }
+                            
+                            // Trường hợp C (Dự phòng index): Quét 3 phần tử tiếp theo
+                            if ([shipFee isEqualToString:@"--"]) {
+                                for (NSUInteger k = i + 1; k < MIN(strings.count, i + 4); k++) {
+                                    NSString *candidate = strings[k];
+                                    NSTextCheckingResult *cMatch = [moneyRegex firstMatchInString:candidate options:0 range:NSMakeRange(0, candidate.length)];
+                                    if (cMatch) {
+                                        shipFee = [[candidate substringWithRange:cMatch.range] stringByAppendingString:@"đ"];
+                                        break;
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // 3. Bóc tách Phí khích lệ tài xế theo Bounding Box
+                    // 3. BÓC TÁCH PHÍ KHÍCH LỆ TÀI XẾ
                     if ([lower containsString:@"khích lệ"]) {
-                        NSRegularExpression *moneyRegex = [NSRegularExpression regularExpressionWithPattern:@"[0-9]{1,3}(?:\\.[0-9]{3})+" options:0 error:nil];
-                        NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
-                        if (sameLineMatch) {
-                            bonusFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
-                        } else {
-                            for (NSUInteger j = 0; j < strings.count; j++) {
-                                if (i == j) continue;
-                                CGRect boxJ = [boxes[j] CGRectValue];
-                                if (fabs(boxJ.origin.y - boxI.origin.y) < 0.035 && boxJ.origin.x > boxI.origin.x) {
-                                    NSString *valStr = strings[j];
-                                    if ([valStr isEqualToString:@"0"] || [valStr containsString:@"0"]) {
-                                        bonusFee = @"0đ";
-                                    } else {
-                                        NSTextCheckingResult *valMatch = [moneyRegex firstMatchInString:valStr options:0 range:NSMakeRange(0, valStr.length)];
-                                        if (valMatch) bonusFee = [[valStr substringWithRange:valMatch.range] stringByAppendingString:@"đ"];
-                                        else bonusFee = [valStr stringByAppendingString:@"đ"];
-                                    }
-                                    break;
+                        CGFloat midY_I = CGRectGetMidY(boxI);
+                        for (NSUInteger j = 0; j < strings.count; j++) {
+                            if (i == j) continue;
+                            CGRect boxJ = [convertedBoxes[j] CGRectValue];
+                            CGFloat midY_J = CGRectGetMidY(boxJ);
+                            if (fabs(midY_J - midY_I) < 0.035 && boxJ.origin.x > boxI.origin.x) {
+                                NSString *valStr = strings[j];
+                                if ([valStr isEqualToString:@"0"] || [valStr containsString:@"0"]) {
+                                    bonusFee = @"0đ";
+                                } else {
+                                    NSTextCheckingResult *valMatch = [moneyRegex firstMatchInString:valStr options:0 range:NSMakeRange(0, valStr.length)];
+                                    if (valMatch) bonusFee = [[valStr substringWithRange:valMatch.range] stringByAppendingString:@"đ"];
+                                    else bonusFee = [valStr stringByAppendingString:@"đ"];
                                 }
+                                break;
                             }
                         }
                     }
