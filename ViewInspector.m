@@ -378,7 +378,7 @@ static DriverHelperVC *gDriverVC = nil;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
 
-    // 2. NÚT CHẨN ĐOÁN (DEBUG INSPECT BUTTON Ở GÓC DƯỚI BẢN ĐỒ)
+    // 2. NÚT CHẨN ĐOÁN
     self.debugBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.debugBtn.frame = CGRectMake(sw - 85, sh - 140, 78, 30);
     self.debugBtn.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.7];
@@ -391,7 +391,7 @@ static DriverHelperVC *gDriverVC = nil;
     [self.debugBtn addTarget:self action:@selector(onInspectTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.debugBtn];
 
-    // 3. HUD LOG NHỎ TRÊN MÀN HÌNH
+    // 3. HUD LOG
     self.hudLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, sh - 110, sw - 20, 20)];
     self.hudLogLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.65];
     self.hudLogLabel.textColor = [UIColor whiteColor];
@@ -418,10 +418,10 @@ static DriverHelperVC *gDriverVC = nil;
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chẩn Đoán View"
                                                                    message:[NSString stringWithFormat:@"Top VC: %@\n(Đã copy toàn bộ cây View vào Clipboard!)", topName]
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithAction:@"Bật Test Thanh Cam" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+    [alert addAction:[UIAlertAction actionWithTitle:@"Bật Test Thanh Cam" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         [self showAndExtract];
     }]];
-    [alert addAction:[UIAlertAction actionWithAction:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
