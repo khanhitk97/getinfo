@@ -37,20 +37,6 @@
     return validPhones;
 }
 
-+ (void)forceScrollDown:(UIView *)view {
-    if (!view) return;
-    if ([view isKindOfClass:[UIScrollView class]]) {
-        UIScrollView *sv = (UIScrollView *)view;
-        if (sv.contentSize.height > sv.bounds.size.height) {
-            CGPoint bottomOffset = CGPointMake(0, sv.contentSize.height - sv.bounds.size.height + sv.adjustedContentInset.bottom);
-            [sv setContentOffset:bottomOffset animated:NO];
-        }
-    }
-    for (UIView *sub in view.subviews) {
-        [self forceScrollDown:sub];
-    }
-}
-
 + (UIWindow *)getMainAppWindow {
     UIWindow *mainWin = nil;
     if (@available(iOS 13.0, *)) {
@@ -67,6 +53,21 @@
     }
     if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
     return mainWin;
+}
+
++ (UIScrollView *)findMainScrollView:(UIView *)view {
+    if (!view) return nil;
+    if ([view isKindOfClass:[UIScrollView class]]) {
+        UIScrollView *sv = (UIScrollView *)view;
+        if (sv.contentSize.height > sv.bounds.size.height) {
+            return sv;
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        UIScrollView *found = [self findMainScrollView:sub];
+        if (found) return found;
+    }
+    return nil;
 }
 
 + (BOOL)findReactNativeKeywordInView:(UIView *)v {
@@ -102,15 +103,34 @@
     return [self findReactNativeKeywordInView:win];
 }
 
+// THỰC HIỆN CUỘN XUỐNG ĐÁY LẤY ẢNH -> TRẢ VỀ ĐẦU TRANG NGAY
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
     UIWindow *mainWin = [self getMainAppWindow];
-    [self forceScrollDown:mainWin];
+    if (!mainWin) {
+        if (completion) completion(@"--", @"0đ", @"(Lỗi)", nil, nil);
+        return;
+    }
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    UIScrollView *sv = [self findMainScrollView:mainWin];
+    __block CGPoint originalOffset = sv ? sv.contentOffset : CGPointZero;
+
+    // 1. Nhảy nhanh xuống đáy để React Native nạp dữ liệu bên dưới
+    if (sv && sv.contentSize.height > sv.bounds.size.height) {
+        CGPoint bottomOffset = CGPointMake(0, sv.contentSize.height - sv.bounds.size.height + sv.adjustedContentInset.bottom);
+        [sv setContentOffset:bottomOffset animated:NO];
+    }
+
+    // 2. Chờ 0.06s để khung render xong -> Chụp ảnh -> Đưa về lại vị trí cũ ngay
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
         [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
         UIImage *fullSnapshot = UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
+
+        // Trả vị trí cuộn về lại ban đầu
+        if (sv) {
+            [sv setContentOffset:originalOffset animated:NO];
+        }
 
         if (!fullSnapshot || !fullSnapshot.CGImage) {
             if (completion) completion(@"--", @"0đ", @"(Lỗi chụp)", nil, nil);
@@ -205,7 +225,6 @@
                             if (boxJ.origin.x > boxI.origin.x && fabs(midY_J - midY_I) < 0.025) {
                                 NSString *valStr = [strings[j] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                                 CGFloat dist = fabs(midY_J - midY_I);
-
                                 if (dist < bestDist) {
                                     bestDist = dist;
                                     detectedBonus = valStr;
@@ -359,7 +378,7 @@ static DriverHelperVC *gDriverVC = nil;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
 
-    // 2. ADVANCED HUD CONSOLE (Nằm nổi ở đáy màn hình)
+    // 2. HUD CONSOLE
     self.hudTextView = [[UITextView alloc] initWithFrame:CGRectMake(10, sh - 115, sw - 20, 48)];
     self.hudTextView.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.85];
     self.hudTextView.textColor = [UIColor cyanColor];
@@ -375,14 +394,13 @@ static DriverHelperVC *gDriverVC = nil;
 - (void)appendLog:(NSString *)text {
     dispatch_async(dispatch_get_main_queue(), ^{
         NSString *newText = [NSString stringWithFormat:@"%@\n> %@", self.hudTextView.text, text];
-        // Giới hạn 4 dòng mới nhất
         NSArray *lines = [newText componentsSeparatedByString:@"\n"];
         if (lines.count > 4) {
             lines = [lines subarrayWithRange:NSMakeRange(lines.count - 4, 4)];
             newText = [lines componentsJoinedByString:@"\n"];
         }
         self.hudTextView.text = newText;
-        [UIPasteboard generalPasteboard].string = text; // Tự động copy log mới nhất vào Clipboard
+        [UIPasteboard generalPasteboard].string = text;
     });
 }
 
@@ -455,7 +473,6 @@ static DriverHelperVC *gDriverVC = nil;
 
 #pragma mark - DEEP EVENT HOOKING & SNIFFER
 
-// 1. Hook UIControl sendAction:to:forEvent: (Bắt sự kiện click Button hệ thống)
 static BOOL (*orig_sendAction)(id, SEL, SEL, id, id, UIEvent *);
 static BOOL custom_sendAction(UIControl *self, SEL _cmd, SEL action, id target, id sender, UIEvent *event) {
     NSString *actName = NSStringFromSelector(action);
@@ -468,7 +485,6 @@ static BOOL custom_sendAction(UIControl *self, SEL _cmd, SEL action, id target, 
     return orig_sendAction(self, _cmd, action, target, sender, event);
 }
 
-// 2. Hook UIView willRemoveSubview: (Bắt sự kiện gỡ bỏ Modal / Bottom Sheet)
 static void (*orig_willRemoveSubview)(id, SEL, UIView *);
 static void custom_willRemoveSubview(UIView *self, SEL _cmd, UIView *subview) {
     orig_willRemoveSubview(self, _cmd, subview);
@@ -483,7 +499,6 @@ static void custom_willRemoveSubview(UIView *self, SEL _cmd, UIView *subview) {
     }
 }
 
-// 3. Hook UIApplication sendEvent: (Bắt Touch & Tọa độ thực tế)
 static void (*orig_sendEvent)(id, SEL, UIEvent *);
 static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     orig_sendEvent(self, _cmd, event);
@@ -495,15 +510,12 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
                 NSString *vClass = NSStringFromClass([hitV class]);
                 NSString *accLabel = hitV.accessibilityLabel ?: @"";
 
-                // Log chi tiết cú chạm
                 [gDriverVC appendLog:[NSString stringWithFormat:@"TOUCH (%.0f, %.0f) | View: %@ | Acc: '%@'", loc.x, loc.y, vClass, accLabel]];
 
-                // Nếu chạm vùng Header bên trái (nút Trở về)
                 if (loc.x <= 90.0 && loc.y <= 110.0) {
                     [gDriverVC hideHeader];
                 }
 
-                // Kiểm tra lại toàn bộ cây view sau cú chạm 0.25s
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC checkAndHandleState];
                 });
@@ -523,11 +535,10 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Đục lỗ hoàn toàn khu vực nút Back (X: 0 -> 90, Y: 0 -> 110)
     if (point.x <= 90.0 && point.y <= 110.0) {
         DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
         [vc hideHeader];
-        return nil; // Cho phép touch xuyên thẳng xuống app gốc
+        return nil;
     }
     return hitView;
 }
@@ -537,25 +548,21 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
-    // 1. Hook UIControl sendAction
     Class ctrlClass = [UIControl class];
     Method mAction = class_getInstanceMethod(ctrlClass, @selector(sendAction:to:forEvent:));
     orig_sendAction = (BOOL(*)(id, SEL, SEL, id, id, UIEvent *))method_getImplementation(mAction);
     method_setImplementation(mAction, (IMP)custom_sendAction);
 
-    // 2. Hook UIView willRemoveSubview
     Class viewClass = [UIView class];
     Method mRemove = class_getInstanceMethod(viewClass, @selector(willRemoveSubview:));
     orig_willRemoveSubview = (void(*)(id, SEL, UIView *))method_getImplementation(mRemove);
     method_setImplementation(mRemove, (IMP)custom_willRemoveSubview);
 
-    // 3. Hook UIApplication sendEvent
     Class appClass = [UIApplication class];
     Method mSend = class_getInstanceMethod(appClass, @selector(sendEvent:));
     orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(mSend);
     method_setImplementation(mSend, (IMP)custom_sendEvent);
 
-    // 4. Khởi tạo Overlay Window
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
