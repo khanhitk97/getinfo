@@ -28,6 +28,7 @@
     return mainWin;
 }
 
+// Kiểm tra xem màn hình hiện tại có từ khóa của màn hình đơn hàng hay không
 + (BOOL)scanForOrderKeywordsInView:(UIView *)v {
     if (!v || v.hidden || v.alpha < 0.05) return NO;
 
@@ -199,7 +200,7 @@
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeBar;
-@property (nonatomic, strong) UILabel *backIconVisual; // Icon vẽ hiển thị nút quay lại
+@property (nonatomic, strong) UILabel *backIconLabel; // Nhãn biểu tượng nút Back (chỉ hiển thị, không bắt chạm)
 @property (nonatomic, strong) UILabel *feeLabel;
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIButton *callSecondBtn;
@@ -233,14 +234,14 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeBar.hidden = YES;
     [self.view addSubview:self.orangeBar];
 
-    // 2. ICON VẼ HIỂN THỊ NÚT BACK (Tọa độ X:15, Y:42 - Cho xuyên chạm 100%)
-    self.backIconVisual = [[UILabel alloc] initWithFrame:CGRectMake(12, 40, 36, 44)];
-    self.backIconVisual.text = @"‹";
-    self.backIconVisual.textColor = [UIColor whiteColor];
-    self.backIconVisual.font = [UIFont systemFontOfSize:40.0 weight:UIFontWeightMedium];
-    self.backIconVisual.textAlignment = NSTextAlignmentCenter;
-    self.backIconVisual.userInteractionEnabled = NO; // Không chặn chạm
-    [self.orangeBar addSubview:self.backIconVisual];
+    // 2. BIỂU TƯỢNG NÚT BACK (Chỉ vẽ lên để định vị vị trí bấm, xuyên chạm 100%)
+    self.backIconLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 40, 36, 44)];
+    self.backIconLabel.text = @"‹";
+    self.backIconLabel.textColor = [UIColor whiteColor];
+    self.backIconLabel.font = [UIFont systemFontOfSize:42.0 weight:UIFontWeightMedium];
+    self.backIconLabel.textAlignment = NSTextAlignmentCenter;
+    self.backIconLabel.userInteractionEnabled = NO; // Tắt bắt chạm để sự kiện xuyên qua
+    [self.orangeBar addSubview:self.backIconLabel];
 
     // Nút Zalo
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -264,7 +265,7 @@ static DriverHelperVC *gDriverVC = nil;
     [self.closeBtn addTarget:self action:@selector(hideHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeBar addSubview:self.closeBtn];
 
-    // Dòng Phí Ship & Khích Lệ (Bắt đầu tại X = 50)
+    // Dòng Phí Ship & Khích Lệ (Bắt đầu từ X = 50 sau nút Back)
     self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 44, sw - 150, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
@@ -357,9 +358,18 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     if (event.type == UIEventTypeTouches) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
+                CGPoint loc = [t locationInView:nil];
                 NSString *acc = t.view.accessibilityLabel ?: @"";
 
-                // Bấm vào thông báo "Quay lại danh sách đơn" -> Đóng ngay
+                // 1. Chạm góc trên bên trái (nút Trở về <) -> ĐÓNG NGAY
+                if (loc.x <= 75.0 && loc.y <= 100.0) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [gDriverVC hideHeader];
+                    });
+                    break;
+                }
+
+                // 2. Chạm vào thông báo Quay lại danh sách đơn -> ĐÓNG NGAY
                 if ([acc containsString:@"Quay lại"] || [acc containsString:@"danh sách đơn"]) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         [gDriverVC hideHeader];
@@ -367,7 +377,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
                     break;
                 }
 
-                // Tự động kiểm tra trạng thái màn hình sau 0.3s
+                // 3. Với các cú chạm khác (mở đơn, lướt), đợi 0.3s rồi đồng bộ UI
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC syncUIState];
                 });
@@ -377,7 +387,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     }
 }
 
-#pragma mark - 4. OVERLAY WINDOW HIT TEST (ĐỤC LỖ NÚT BACK CHO XUYÊN CHẠM XUỐNG APP)
+#pragma mark - 4. OVERLAY WINDOW HIT TEST (XUYÊN CHẠM 100% NÚT BACK)
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -386,21 +396,21 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
 
-    // 1. Khi bấm vào khu vực góc trái (Icon ‹ tại X <= 65, Y <= 100)
-    if (point.x <= 65.0 && point.y <= 100.0) {
-        [vc hideHeader]; // Ẩn thanh cam lập tức
-        return nil;      // Xuyên chạm 100% xuống nút Back thật của app gốc
+    // 1. Vùng nút Back góc trên bên trái (X <= 75, Y <= 100): Ẩn thanh cam và xuyên chạm 100% xuống app gốc
+    if (point.x <= 75.0 && point.y <= 100.0) {
+        [vc hideHeader];
+        return nil; 
     }
 
     UIView *hitView = [super hitTest:point withEvent:event];
 
-    // 2. Bắt chạm trên các nút tính năng
+    // 2. Chỉ bắt chạm trên các nút tính năng (Zalo, Gọi phụ, Đóng)
     if (hitView == vc.zaloBtn || hitView == vc.closeBtn || hitView == vc.callSecondBtn) {
         return hitView;
     }
     
-    // 3. Mọi điểm khác xuyên thẳng xuống app
-    if (hitView == self.rootViewController.view || hitView == vc.orangeBar || hitView == vc.feeLabel || hitView == vc.noteLabel || hitView == vc.backIconVisual) {
+    // 3. Mọi điểm khác (kể cả icon biểu tượng Back hay nền thanh cam) đều xuyên chạm thẳng xuống app gốc
+    if (hitView == self.rootViewController.view || hitView == vc.orangeBar || hitView == vc.feeLabel || hitView == vc.noteLabel || hitView == vc.backIconLabel) {
         return nil; 
     }
     return hitView;
