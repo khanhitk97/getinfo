@@ -1,4 +1,4 @@
-name: Build Driver Helper Dylib
+name: Build DriverHelper Dylib
 
 on:
   push:
@@ -10,42 +10,37 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Compile Dylib
+      - name: Setup Xcode Environment
+        run: |
+          sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Compile Dylib with Clang
         run: |
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "Building with SDK: $SDK_PATH"
           
-          # Tự động nhận diện file ViewInspector.m hoặc DriverHelper.m
-          SOURCE_FILE="ViewInspector.m"
-          if [ -f "DriverHelper.m" ]; then
-            SOURCE_FILE="DriverHelper.m"
-          fi
-          
-          echo "Compiling from source: $SOURCE_FILE"
-          
-          clang -target arm64-apple-ios13.0 \
-                -isysroot "$SDK_PATH" \
-                -dynamiclib \
-                -install_name @rpath/DriverHelper.dylib \
+          clang -isysroot "${SDK_PATH}" \
+                -arch arm64 \
+                -miphoneos-version-min=14.0 \
+                -shared \
                 -fobjc-arc \
                 -framework UIKit \
                 -framework Foundation \
+                -framework CoreFoundation \
                 -framework CoreGraphics \
-                -framework QuartzCore \
-                -framework Vision \
-                -O2 \
-                "$SOURCE_FILE" -o DriverHelper.dylib
+                DriverHelper.m fishhook.c \
+                -o DriverHelper.dylib
 
-      - name: Validate Binary
+      - name: Verify Dylib Architecture
         run: |
           file DriverHelper.dylib
           otool -L DriverHelper.dylib
 
-      - name: Upload Binary Artifact
+      - name: Upload Dylib Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DriverHelper.dylib
+          name: DriverHelper-Dylib
           path: DriverHelper.dylib
