@@ -6,7 +6,6 @@
 @interface DriverDataExtractor : NSObject
 + (BOOL)hasOrderDetailKeywords;
 + (void)extractDataDirectlyFromRAM:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *secondPhone))completion;
-+ (void)triggerNativeBackButton;
 @end
 
 @implementation DriverDataExtractor
@@ -27,59 +26,6 @@
     }
     if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
     return mainWin;
-}
-
-// Giả lập click vào nút Back gốc của React Native (tại X: 42, Y: 61)
-+ (void)triggerNativeBackButton {
-    UIWindow *win = [self getMainAppWindow];
-    if (!win) return;
-
-    CGPoint backPt = CGPointMake(42.0, 61.0);
-    UIView *targetView = [win hitTest:backPt withEvent:nil];
-
-    if (targetView) {
-        // 1. Kích hoạt Gesture Recognizers nếu có
-        for (UIGestureRecognizer *gr in targetView.gestureRecognizers) {
-            if ([gr isKindOfClass:[UITapGestureRecognizer class]]) {
-                for (id target in [gr valueForKey:@"targets"]) {
-                    id t = [target valueForKey:@"target"];
-                    SEL action = NSSelectorFromString([target valueForKey:@"action"]);
-                    if (t && [t respondsToSelector:action]) {
-                        #pragma clang diagnostic push
-                        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                        [t performSelector:action withObject:gr];
-                        #pragma clang diagnostic pop
-                    }
-                }
-            }
-        }
-
-        // 2. Kích hoạt UIControl target nếu có
-        if ([targetView isKindOfClass:[UIControl class]]) {
-            UIControl *ctrl = (UIControl *)targetView;
-            [ctrl sendActionsForControlEvents:UIControlEventTouchUpInside];
-        }
-
-        // 3. Quét lên View cha để đảm bảo gửi trúng Touchable của React Native
-        UIView *parent = targetView.superview;
-        while (parent && parent != win) {
-            for (UIGestureRecognizer *gr in parent.gestureRecognizers) {
-                if ([gr isKindOfClass:[UITapGestureRecognizer class]]) {
-                    for (id target in [gr valueForKey:@"targets"]) {
-                        id t = [target valueForKey:@"target"];
-                        SEL action = NSSelectorFromString([target valueForKey:@"action"]);
-                        if (t && [t respondsToSelector:action]) {
-                            #pragma clang diagnostic push
-                            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                            [t performSelector:action withObject:gr];
-                            #pragma clang diagnostic pop
-                        }
-                    }
-                }
-            }
-            parent = parent.superview;
-        }
-    }
 }
 
 + (BOOL)scanForOrderKeywordsInView:(UIView *)v {
@@ -249,11 +195,11 @@
 
 @end
 
-#pragma mark - 2. GIAO DIỆN THANH OVERLAY (KÈM NÚT TRỞ VỀ ẢO)
+#pragma mark - 2. GIAO DIỆN THANH OVERLAY
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeBar;
-@property (nonatomic, strong) UIButton *virtualBackBtn; // Nút Trở về ảo
+@property (nonatomic, strong) UILabel *backIconVisual; // Icon vẽ hiển thị nút quay lại
 @property (nonatomic, strong) UILabel *feeLabel;
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIButton *callSecondBtn;
@@ -287,15 +233,14 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeBar.hidden = YES;
     [self.view addSubview:self.orangeBar];
 
-    // 2. NÚT TRỞ VỀ ẢO (‹) Ở GÓC TRÊN BÊN TRÁI
-    self.virtualBackBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.virtualBackBtn.frame = CGRectMake(8, 42, 44, 44);
-    [self.virtualBackBtn setTitle:@"‹" forState:UIControlStateNormal];
-    [self.virtualBackBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.virtualBackBtn.titleLabel.font = [UIFont systemFontOfSize:38.0 weight:UIFontWeightMedium];
-    self.virtualBackBtn.contentEdgeInsets = UIEdgeInsetsMake(-4, 0, 0, 0);
-    [self.virtualBackBtn addTarget:self action:@selector(handleVirtualBackTap) forControlEvents:UIControlEventTouchUpInside];
-    [self.orangeBar addSubview:self.virtualBackBtn];
+    // 2. ICON VẼ HIỂN THỊ NÚT BACK (Tọa độ X:15, Y:42 - Cho xuyên chạm 100%)
+    self.backIconVisual = [[UILabel alloc] initWithFrame:CGRectMake(12, 40, 36, 44)];
+    self.backIconVisual.text = @"‹";
+    self.backIconVisual.textColor = [UIColor whiteColor];
+    self.backIconVisual.font = [UIFont systemFontOfSize:40.0 weight:UIFontWeightMedium];
+    self.backIconVisual.textAlignment = NSTextAlignmentCenter;
+    self.backIconVisual.userInteractionEnabled = NO; // Không chặn chạm
+    [self.orangeBar addSubview:self.backIconVisual];
 
     // Nút Zalo
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -319,15 +264,15 @@ static DriverHelperVC *gDriverVC = nil;
     [self.closeBtn addTarget:self action:@selector(hideHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeBar addSubview:self.closeBtn];
 
-    // Dòng Phí Ship & Khích Lệ (Bắt đầu sau nút Trở về ảo: X = 54)
-    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(54, 44, sw - 154, 22)];
+    // Dòng Phí Ship & Khích Lệ (Bắt đầu tại X = 50)
+    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 44, sw - 150, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
     self.feeLabel.text = @"🛵 Ship: Đang đọc... | 🎁 --";
     [self.orangeBar addSubview:self.feeLabel];
 
     // Dòng Ghi Chú
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(54, 67, sw - 134, 26)];
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 67, sw - 130, 26)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.noteLabel.numberOfLines = 2;
@@ -345,12 +290,6 @@ static DriverHelperVC *gDriverVC = nil;
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeBar addSubview:self.callSecondBtn];
-}
-
-// Xử lý khi người dùng chạm vào nút Trở về ảo
-- (void)handleVirtualBackTap {
-    [self hideHeader];
-    [DriverDataExtractor triggerNativeBackButton];
 }
 
 - (void)syncUIState {
@@ -379,10 +318,10 @@ static DriverHelperVC *gDriverVC = nil;
             self.callSecondBtn.hidden = NO;
             self.callSecondBtn.accessibilityValue = secondPhone;
             [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [secondPhone substringFromIndex:MAX(0, (int)secondPhone.length - 4)]] forState:UIControlStateNormal];
-            self.noteLabel.frame = CGRectMake(54, 67, [UIScreen mainScreen].bounds.size.width - 134, 26);
+            self.noteLabel.frame = CGRectMake(50, 67, [UIScreen mainScreen].bounds.size.width - 130, 26);
         } else {
             self.callSecondBtn.hidden = YES;
-            self.noteLabel.frame = CGRectMake(54, 67, [UIScreen mainScreen].bounds.size.width - 60, 26);
+            self.noteLabel.frame = CGRectMake(50, 67, [UIScreen mainScreen].bounds.size.width - 56, 26);
         }
     }];
 }
@@ -420,7 +359,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
             if (t.phase == UITouchPhaseEnded) {
                 NSString *acc = t.view.accessibilityLabel ?: @"";
 
-                // Chạm vào thông báo "Quay lại danh sách đơn" -> Đóng ngay
+                // Bấm vào thông báo "Quay lại danh sách đơn" -> Đóng ngay
                 if ([acc containsString:@"Quay lại"] || [acc containsString:@"danh sách đơn"]) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         [gDriverVC hideHeader];
@@ -428,7 +367,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
                     break;
                 }
 
-                // Các tương tác khác -> Tự động đồng bộ UI sau 0.3s
+                // Tự động kiểm tra trạng thái màn hình sau 0.3s
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC syncUIState];
                 });
@@ -438,24 +377,30 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     }
 }
 
-#pragma mark - 4. OVERLAY WINDOW HIT TEST
+#pragma mark - 4. OVERLAY WINDOW HIT TEST (ĐỤC LỖ NÚT BACK CHO XUYÊN CHẠM XUỐNG APP)
 
 @interface DriverOverlayWindow : UIWindow
 @end
 
 @implementation DriverOverlayWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hitView = [super hitTest:point withEvent:event];
-    
     DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
-    
-    // Bắt tương tác trên nút Trở về ảo, Zalo, Gọi phụ, Đóng
-    if (hitView == vc.virtualBackBtn || hitView == vc.zaloBtn || hitView == vc.closeBtn || hitView == vc.callSecondBtn) {
+
+    // 1. Khi bấm vào khu vực góc trái (Icon ‹ tại X <= 65, Y <= 100)
+    if (point.x <= 65.0 && point.y <= 100.0) {
+        [vc hideHeader]; // Ẩn thanh cam lập tức
+        return nil;      // Xuyên chạm 100% xuống nút Back thật của app gốc
+    }
+
+    UIView *hitView = [super hitTest:point withEvent:event];
+
+    // 2. Bắt chạm trên các nút tính năng
+    if (hitView == vc.zaloBtn || hitView == vc.closeBtn || hitView == vc.callSecondBtn) {
         return hitView;
     }
     
-    // Mọi điểm chạm vào nền trống hoặc chữ -> Xuyên thẳng xuống app gốc
-    if (hitView == self.rootViewController.view || hitView == vc.orangeBar || hitView == vc.feeLabel || hitView == vc.noteLabel) {
+    // 3. Mọi điểm khác xuyên thẳng xuống app
+    if (hitView == self.rootViewController.view || hitView == vc.orangeBar || hitView == vc.feeLabel || hitView == vc.noteLabel || hitView == vc.backIconVisual) {
         return nil; 
     }
     return hitView;
