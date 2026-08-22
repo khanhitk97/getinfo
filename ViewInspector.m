@@ -169,7 +169,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ NỀN CAM CO GỌN (CHIỀU CAO 108pt)
+#pragma mark - UI SÁT MÉP TRÊN (CHIỀU CAO 90pt, ÉP SÁT ĐỈNH)
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIButton *bubbleBtn;
@@ -190,62 +190,70 @@
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // Bong bóng nhỏ góc phải
+    // 1. Nút bong bóng nhỏ ở góc phải (nằm ở Y = 150)
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.bubbleBtn.frame = CGRectMake(sw - 56, 160, 48, 48);
+    self.bubbleBtn.frame = CGRectMake(sw - 54, 150, 46, 46);
     self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:0.98];
     [self.bubbleBtn setTitle:@"🛵 Đơn" forState:UIControlStateNormal];
     [self.bubbleBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.0];
-    self.bubbleBtn.layer.cornerRadius = 24;
+    self.bubbleBtn.layer.cornerRadius = 23;
     self.bubbleBtn.layer.borderWidth = 2;
     self.bubbleBtn.layer.borderColor = [UIColor whiteColor].CGColor;
     [self.bubbleBtn addTarget:self action:@selector(openOrangeHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.bubbleBtn addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanBubble:)]];
     [self.view addSubview:self.bubbleBtn];
 
-    // Lớp phủ nền cam rút gọn chiều cao xuống 108pt (ôm khít thanh tiêu đề)
-    self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 108)];
+    // 2. LỚP PHỦ NỀN CAM RÚT XUỐNG 90pt (VỪA KHÍT HEADER GỐC CỦA APP)
+    self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 92)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
     self.orangeHeaderBar.layer.shadowOpacity = 0.25;
-    self.orangeHeaderBar.layer.shadowOffset = CGSizeMake(0, 2);
-    self.orangeHeaderBar.layer.shadowRadius = 3;
+    self.orangeHeaderBar.layer.shadowOffset = CGSizeMake(0, 1.5);
+    self.orangeHeaderBar.layer.shadowRadius = 2.5;
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
-    // Nút Zalo góc trên phải (Y = 48)
+    // Hàng 1 (Y = 44): Ngay dưới tai thỏ, ngang hàng nút Trở về (<)
+    // Nút Zalo sát mép phải
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.zaloBtn.frame = CGRectMake(sw - 68, 48, 60, 26);
+    self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
     [self.zaloBtn setTitle:@"💬 Zalo" forState:UIControlStateNormal];
     [self.zaloBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.zaloBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
-    self.zaloBtn.layer.cornerRadius = 13;
+    self.zaloBtn.layer.cornerRadius = 12;
     self.zaloBtn.layer.borderWidth = 0.8;
     self.zaloBtn.layer.borderColor = [UIColor whiteColor].CGColor;
     [self.zaloBtn addTarget:self action:@selector(openZaloDirectly) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.zaloBtn];
 
-    // Nút Đóng
+    // Nút Đóng (✕)
     self.closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.closeBtn.frame = CGRectMake(sw - 96, 48, 24, 26);
+    self.closeBtn.frame = CGRectMake(sw - 92, 43, 22, 24);
     [self.closeBtn setTitle:@"✕" forState:UIControlStateNormal];
     [self.closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
     [self.closeBtn addTarget:self action:@selector(closeOrangeHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.closeBtn];
 
-    // Hàng 1: Phí Ship & Khích Lệ đẩy lên Y = 50 (ngang hàng nút Zalo/Back)
-    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 50, sw - 150, 22)];
+    // Dòng Phí Ship & Khích Lệ (Y = 44, đè ngay chính giữa tên quán cũ)
+    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 44, sw - 142, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
-    self.feeLabel.font = [UIFont boldSystemFontOfSize:12.0];
-    self.feeLabel.text = @"🛵 Ship: --  |  🎁 Khích lệ: 0đ";
+    self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
+    self.feeLabel.text = @"🛵 Ship: -- | 🎁 Khích lệ: 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
-    // Nút Gọi phụ (chỉ hiện khi 2 SĐT)
+    // Hàng 2 (Y = 68): Ghi chú & Nút Gọi phụ nằm sát bên dưới
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 68, sw - 128, 18)];
+    self.noteLabel.textColor = [UIColor yellowColor];
+    self.noteLabel.font = [UIFont boldSystemFontOfSize:11.0];
+    self.noteLabel.text = @"📌 Ghi chú: Không có ghi chú";
+    [self.orangeHeaderBar addSubview:self.noteLabel];
+
+    // Nút Gọi phụ (nếu có 2 SĐT)
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.callSecondBtn.frame = CGRectMake(sw - 80, 78, 72, 22);
+    self.callSecondBtn.frame = CGRectMake(sw - 78, 67, 72, 20);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
     [self.callSecondBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.callSecondBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10.0];
@@ -253,13 +261,6 @@
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
-
-    // Hàng 2: Ghi chú đẩy lên sát Y = 78
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 78, sw - 135, 20)];
-    self.noteLabel.textColor = [UIColor yellowColor];
-    self.noteLabel.font = [UIFont boldSystemFontOfSize:11.0];
-    self.noteLabel.text = @"📌 Ghi chú: Không có ghi chú";
-    [self.orangeHeaderBar addSubview:self.noteLabel];
 }
 
 - (void)onPanBubble:(UIPanGestureRecognizer *)p {
@@ -286,17 +287,17 @@
         self.orderImageToSend = croppedOrderImage;
         self.currentPhoneForZalo = randomSecondPhone;
 
-        self.feeLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@  |  🎁 Khích lệ: %@", shipFee, bonusFee];
+        self.feeLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@ | 🎁 Khích lệ: %@", shipFee, bonusFee];
         self.noteLabel.text = [NSString stringWithFormat:@"📌 Ghi chú: %@", note];
 
         if (randomSecondPhone.length > 0) {
             self.callSecondBtn.hidden = NO;
             self.callSecondBtn.accessibilityValue = randomSecondPhone;
             [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [randomSecondPhone substringFromIndex:MAX(0, (int)randomSecondPhone.length - 4)]] forState:UIControlStateNormal];
-            self.noteLabel.frame = CGRectMake(50, 78, [UIScreen mainScreen].bounds.size.width - 135, 20);
+            self.noteLabel.frame = CGRectMake(46, 68, [UIScreen mainScreen].bounds.size.width - 128, 18);
         } else {
             self.callSecondBtn.hidden = YES;
-            self.noteLabel.frame = CGRectMake(50, 78, [UIScreen mainScreen].bounds.size.width - 60, 20);
+            self.noteLabel.frame = CGRectMake(46, 68, [UIScreen mainScreen].bounds.size.width - 56, 18);
         }
     }];
 }
@@ -333,8 +334,8 @@
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Đục lỗ góc trái (X: 0 -> 48, Y: 0 -> 80) để bấm xuyên vào nút Trở về (<)
-    if (point.x <= 48.0 && point.y <= 80.0) {
+    // Đục lỗ góc trái (X: 0 -> 45, Y: 0 -> 75) để bấm xuyên vào nút Trở về (<)
+    if (point.x <= 45.0 && point.y <= 75.0) {
         return nil;
     }
     return hitView;
