@@ -1,10 +1,12 @@
 #import <UIKit/UIKit.h>
 #import <Vision/Vision.h>
+#import <objc/runtime.h>
 
 #pragma mark - DATA EXTRACTION ENGINE
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
++ (BOOL)isCurrentScreenOrderDetail;
 @end
 
 @implementation DriverDataExtractor
@@ -47,6 +49,38 @@
     for (UIView *sub in view.subviews) {
         [self forceScrollDown:sub];
     }
+}
+
++ (BOOL)hasOrderDetailKeywordInView:(UIView *)view {
+    if (!view) return NO;
+    if ([view isKindOfClass:[UILabel class]]) {
+        NSString *txt = [(UILabel *)view text].lowercaseString;
+        if ([txt containsString:@"vuốt để nhận"] || [txt containsString:@"mua hàng tại"] || [txt containsString:@"chi tiết đơn"]) {
+            return YES;
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        if ([self hasOrderDetailKeywordInView:sub]) return YES;
+    }
+    return NO;
+}
+
++ (BOOL)isCurrentScreenOrderDetail {
+    UIWindow *mainWin = nil;
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
+            if ([s isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *w in ((UIWindowScene *)s).windows) {
+                    if (!w.isHidden && ![NSStringFromClass([w class]) containsString:@"DriverOverlayWindow"]) {
+                        mainWin = w;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
+    return [self hasOrderDetailKeywordInView:mainWin];
 }
 
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
@@ -110,7 +144,7 @@
                     NSString *lower = [l lowercaseString];
                     CGRect boxI = [convertedBoxes[i] CGRectValue];
 
-                    // 1. Quét SĐT ở mục "Mua hàng tại"
+                    // 1. Quét SĐT mục "Mua hàng tại"
                     if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"] || [lower containsString:@"cơm"]) {
                         NSArray *pList = [self extractPhonesFromText:l];
                         for (NSString *p in pList) {
@@ -171,14 +205,12 @@
                         }
                     }
 
-                    // 4. BÓC TÁCH GHI CHÚ (GOM TẤT CẢ CÁC DÒNG XUỐNG HÀNG TIẾP THEO)
+                    // 4. Bóc tách Ghi chú (Gom nhiều dòng)
                     if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
                         NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
                         for (NSUInteger k = i + 1; k < strings.count; k++) {
                             NSString *nextCandidate = strings[k];
                             NSString *nextLower = [nextCandidate lowercaseString];
-
-                            // Dừng lại khi chạm vào các dòng cảnh báo hoặc nút nhận đơn
                             if ([nextLower containsString:@"tài xế vui lòng"] || 
                                 [nextLower containsString:@"vuốt để nhận"] || 
                                 [nextLower containsString:@"tài xế được nhận"]) {
@@ -216,42 +248,32 @@
 
 @end
 
-#pragma mark - UI SÁT MÉP TRÊN CÙNG (HỖ TRỢ GHI CHÚ NHIỀU DÒNG)
+#pragma mark - UI LỚP PHỦ NỀN CAM
 
 @interface DriverHelperVC : UIViewController
-@property (nonatomic, strong) UIButton *bubbleBtn;
 @property (nonatomic, strong) UIView *orangeHeaderBar;
 @property (nonatomic, strong) UILabel *feeLabel;
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
-@property (nonatomic, strong) UIButton *closeBtn;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
+
+- (void)autoTriggerWhenOrderOpened;
+- (void)autoHideWhenBackToList;
 @end
+
+static DriverHelperVC *gDriverVC = nil;
 
 @implementation DriverHelperVC
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    gDriverVC = self;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // Bong bóng nổi góc phải
-    self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.bubbleBtn.frame = CGRectMake(sw - 54, 150, 46, 46);
-    self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:0.98];
-    [self.bubbleBtn setTitle:@"🛵 Đơn" forState:UIControlStateNormal];
-    [self.bubbleBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.bubbleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.0];
-    self.bubbleBtn.layer.cornerRadius = 23;
-    self.bubbleBtn.layer.borderWidth = 2;
-    self.bubbleBtn.layer.borderColor = [UIColor whiteColor].CGColor;
-    [self.bubbleBtn addTarget:self action:@selector(openOrangeHeader) forControlEvents:UIControlEventTouchUpInside];
-    [self.bubbleBtn addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanBubble:)]];
-    [self.view addSubview:self.bubbleBtn];
-
-    // Lớp phủ nền cam 96pt
+    // Lớp phủ nền cam 96pt (Mặc định ẩn 100% khi ở màn hình danh sách)
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -261,7 +283,7 @@
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
-    // Hàng 1 (Y = 44): Nút Zalo bên phải
+    // Hàng 1 (Y = 44): Nút Zalo góc phải
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
@@ -274,20 +296,11 @@
     [self.zaloBtn addTarget:self action:@selector(openZaloDirectly) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.zaloBtn];
 
-    // Nút Đóng (✕)
-    self.closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.closeBtn.frame = CGRectMake(sw - 92, 43, 22, 24);
-    [self.closeBtn setTitle:@"✕" forState:UIControlStateNormal];
-    [self.closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
-    [self.closeBtn addTarget:self action:@selector(closeOrangeHeader) forControlEvents:UIControlEventTouchUpInside];
-    [self.orangeHeaderBar addSubview:self.closeBtn];
-
     // Dòng Phí Ship & Khích Lệ (Y = 44)
-    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 44, sw - 142, 22)];
+    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 44, sw - 120, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
-    self.feeLabel.text = @"🛵 Ship: -- | 🎁 Khích lệ: 0đ";
+    self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
     // Hàng 2 (Y = 67): Ghi chú (Hỗ trợ 2 dòng)
@@ -296,7 +309,7 @@
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.noteLabel.numberOfLines = 2;
     self.noteLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.noteLabel.text = @"📌 Ghi chú: Không có ghi chú";
+    self.noteLabel.text = @"📌 Đang phân tích đơn hàng...";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
     // Nút Gọi phụ (chỉ hiện khi có 2 SĐT)
@@ -311,25 +324,13 @@
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
 }
 
-- (void)onPanBubble:(UIPanGestureRecognizer *)p {
-    CGPoint t = [p translationInView:self.view];
-    self.bubbleBtn.center = CGPointMake(self.bubbleBtn.center.x + t.x, self.bubbleBtn.center.y + t.y);
-    [p setTranslation:CGPointZero inView:self.view];
-}
-
-- (void)openOrangeHeader {
-    self.bubbleBtn.hidden = YES;
+- (void)autoTriggerWhenOrderOpened {
+    if (!self.orangeHeaderBar.hidden) return;
     self.orangeHeaderBar.hidden = NO;
-    [self scanAndRefresh];
-}
-
-- (void)closeOrangeHeader {
-    self.orangeHeaderBar.hidden = YES;
-    self.bubbleBtn.hidden = NO;
-}
-
-- (void)scanAndRefresh {
     self.orangeHeaderBar.alpha = 0.6;
+    self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
+    self.noteLabel.text = @"📌 Đang tải ghi chú...";
+
     [DriverDataExtractor expandSheetAndExtract:^(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage) {
         self.orangeHeaderBar.alpha = 1.0;
         self.orderImageToSend = croppedOrderImage;
@@ -348,6 +349,10 @@
             self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 56, 26);
         }
     }];
+}
+
+- (void)autoHideWhenBackToList {
+    self.orangeHeaderBar.hidden = YES;
 }
 
 - (void)openZaloDirectly {
@@ -372,6 +377,23 @@
 
 @end
 
+#pragma mark - METHOD SWIZZLING TỰ ĐỘNG BẮT SỰ KIỆN CHUYỂN MÀN HÌNH
+
+static void (*orig_viewDidAppear)(id, SEL, BOOL);
+
+static void custom_viewDidAppear(UIViewController *self, SEL _cmd, BOOL animated) {
+    orig_viewDidAppear(self, _cmd, animated);
+
+    // Chờ 0.25s để UI con nạp đầy đủ
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if ([DriverDataExtractor isCurrentScreenOrderDetail]) {
+            [gDriverVC autoTriggerWhenOrderOpened];
+        } else {
+            [gDriverVC autoHideWhenBackToList];
+        }
+    });
+}
+
 #pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK
 
 @interface DriverOverlayWindow : UIWindow
@@ -382,7 +404,7 @@
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Đục lỗ góc trái (X: 0 -> 45, Y: 0 -> 75)
+    // Đục lỗ góc trái (X: 0 -> 45, Y: 0 -> 75) cho nút Trở về (<)
     if (point.x <= 45.0 && point.y <= 75.0) {
         return nil;
     }
@@ -394,6 +416,14 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
+    // 1. Hook UIViewController viewDidAppear:
+    Class vcClass = [UIViewController class];
+    SEL sel = @selector(viewDidAppear:);
+    Method m = class_getInstanceMethod(vcClass, sel);
+    orig_viewDidAppear = (void(*)(id, SEL, BOOL))method_getImplementation(m);
+    method_setImplementation(m, (IMP)custom_viewDidAppear);
+
+    // 2. Khởi tạo Overlay Window
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
