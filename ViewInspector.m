@@ -269,7 +269,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ NỀN CAM & LOGGER HUD
+#pragma mark - UI LỚP PHỦ VÀ ADVANCED HUD LOGGER
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -278,7 +278,7 @@
 @property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
 @property (nonatomic, strong) UIButton *closeBtn;
-@property (nonatomic, strong) UILabel *hudLogLabel;
+@property (nonatomic, strong) UITextView *hudTextView;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
 @property (nonatomic, assign) BOOL isShowing;
@@ -286,7 +286,7 @@
 - (void)checkAndHandleState;
 - (void)showAndExtract;
 - (void)hideHeader;
-- (void)logTouchPoint:(CGPoint)p viewName:(NSString *)name;
+- (void)appendLog:(NSString *)text;
 @end
 
 static DriverHelperVC *gDriverVC = nil;
@@ -310,7 +310,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
-    // Nút Zalo góc phải
+    // Nút Zalo
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
@@ -332,15 +332,15 @@ static DriverHelperVC *gDriverVC = nil;
     [self.closeBtn addTarget:self action:@selector(hideHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.closeBtn];
 
-    // Dòng Phí Ship & Khích Lệ (Dịch lề trái X = 60 để chừa nút Back)
-    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(60, 44, sw - 160, 22)];
+    // Dòng Phí Ship
+    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(65, 44, sw - 165, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
     self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
-    // Hàng 2 (Y = 67): Ghi chú
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(60, 67, sw - 140, 26)];
+    // Dòng Ghi chú
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(65, 67, sw - 145, 26)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.noteLabel.numberOfLines = 2;
@@ -359,20 +359,30 @@ static DriverHelperVC *gDriverVC = nil;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
 
-    // 2. HUD LOGGER HIỂN THỊ TỌA ĐỘ VÀ VIEW NHẬN CHẠM
-    self.hudLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, sh - 90, sw - 20, 22)];
-    self.hudLogLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75];
-    self.hudLogLabel.textColor = [UIColor cyanColor];
-    self.hudLogLabel.font = [UIFont boldSystemFontOfSize:10.5];
-    self.hudLogLabel.text = @" HUD: Sẵn sàng ghi nhận Touch...";
-    self.hudLogLabel.layer.cornerRadius = 5;
-    self.hudLogLabel.clipsToBounds = YES;
-    [self.view addSubview:self.hudLogLabel];
+    // 2. ADVANCED HUD CONSOLE (Nằm nổi ở đáy màn hình)
+    self.hudTextView = [[UITextView alloc] initWithFrame:CGRectMake(10, sh - 115, sw - 20, 48)];
+    self.hudTextView.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.85];
+    self.hudTextView.textColor = [UIColor cyanColor];
+    self.hudTextView.font = [UIFont fontWithName:@"Courier" size:10.0] ?: [UIFont systemFontOfSize:10.0];
+    self.hudTextView.editable = NO;
+    self.hudTextView.layer.cornerRadius = 6;
+    self.hudTextView.layer.borderWidth = 1;
+    self.hudTextView.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.3].CGColor;
+    self.hudTextView.text = @"[SNIFFER READY] Bấm nút < để bắt sự kiện...";
+    [self.view addSubview:self.hudTextView];
 }
 
-- (void)logTouchPoint:(CGPoint)p viewName:(NSString *)name {
+- (void)appendLog:(NSString *)text {
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.hudLogLabel.text = [NSString stringWithFormat:@" Touch (X:%.0f, Y:%.0f) -> %@", p.x, p.y, name ?: @"Unknown"];
+        NSString *newText = [NSString stringWithFormat:@"%@\n> %@", self.hudTextView.text, text];
+        // Giới hạn 4 dòng mới nhất
+        NSArray *lines = [newText componentsSeparatedByString:@"\n"];
+        if (lines.count > 4) {
+            lines = [lines subarrayWithRange:NSMakeRange(lines.count - 4, 4)];
+            newText = [lines componentsJoinedByString:@"\n"];
+        }
+        self.hudTextView.text = newText;
+        [UIPasteboard generalPasteboard].string = text; // Tự động copy log mới nhất vào Clipboard
     });
 }
 
@@ -408,10 +418,10 @@ static DriverHelperVC *gDriverVC = nil;
             self.callSecondBtn.hidden = NO;
             self.callSecondBtn.accessibilityValue = randomSecondPhone;
             [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [randomSecondPhone substringFromIndex:MAX(0, (int)randomSecondPhone.length - 4)]] forState:UIControlStateNormal];
-            self.noteLabel.frame = CGRectMake(60, 67, [UIScreen mainScreen].bounds.size.width - 140, 26);
+            self.noteLabel.frame = CGRectMake(65, 67, [UIScreen mainScreen].bounds.size.width - 145, 26);
         } else {
             self.callSecondBtn.hidden = YES;
-            self.noteLabel.frame = CGRectMake(60, 67, [UIScreen mainScreen].bounds.size.width - 68, 26);
+            self.noteLabel.frame = CGRectMake(65, 67, [UIScreen mainScreen].bounds.size.width - 70, 26);
         }
     }];
 }
@@ -443,8 +453,37 @@ static DriverHelperVC *gDriverVC = nil;
 
 @end
 
-#pragma mark - HOOK TOUCH EVENT VÀ BẮT TỌA ĐỘ NÚT TRỞ VỀ
+#pragma mark - DEEP EVENT HOOKING & SNIFFER
 
+// 1. Hook UIControl sendAction:to:forEvent: (Bắt sự kiện click Button hệ thống)
+static BOOL (*orig_sendAction)(id, SEL, SEL, id, id, UIEvent *);
+static BOOL custom_sendAction(UIControl *self, SEL _cmd, SEL action, id target, id sender, UIEvent *event) {
+    NSString *actName = NSStringFromSelector(action);
+    NSString *tgtName = NSStringFromClass([target class]);
+    [gDriverVC appendLog:[NSString stringWithFormat:@"Action: [%@] on %@", actName, tgtName]];
+    
+    if ([actName.lowercaseString containsString:@"back"] || [actName.lowercaseString containsString:@"pop"] || [actName.lowercaseString containsString:@"close"] || [actName.lowercaseString containsString:@"dismiss"]) {
+        [gDriverVC hideHeader];
+    }
+    return orig_sendAction(self, _cmd, action, target, sender, event);
+}
+
+// 2. Hook UIView willRemoveSubview: (Bắt sự kiện gỡ bỏ Modal / Bottom Sheet)
+static void (*orig_willRemoveSubview)(id, SEL, UIView *);
+static void custom_willRemoveSubview(UIView *self, SEL _cmd, UIView *subview) {
+    orig_willRemoveSubview(self, _cmd, subview);
+    if (![NSStringFromClass([subview class]) containsString:@"Driver"]) {
+        NSString *sName = NSStringFromClass([subview class]);
+        if (subview.bounds.size.height > 400 || [sName containsString:@"Modal"] || [sName containsString:@"Sheet"]) {
+            [gDriverVC appendLog:[NSString stringWithFormat:@"Remove Subview: %@", sName]];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [gDriverVC checkAndHandleState];
+            });
+        }
+    }
+}
+
+// 3. Hook UIApplication sendEvent: (Bắt Touch & Tọa độ thực tế)
 static void (*orig_sendEvent)(id, SEL, UIEvent *);
 static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     orig_sendEvent(self, _cmd, event);
@@ -452,18 +491,20 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
                 CGPoint loc = [t locationInView:nil];
-                NSString *vName = NSStringFromClass([t.view class]);
-                [gDriverVC logTouchPoint:loc viewName:vName];
+                UIView *hitV = t.view;
+                NSString *vClass = NSStringFromClass([hitV class]);
+                NSString *accLabel = hitV.accessibilityLabel ?: @"";
 
-                // Nếu chạm vào góc trên bên trái (Vùng nút Back rộng X: 0 -> 80, Y: 0 -> 100)
-                if (loc.x <= 80.0 && loc.y <= 100.0) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [gDriverVC hideHeader];
-                    });
+                // Log chi tiết cú chạm
+                [gDriverVC appendLog:[NSString stringWithFormat:@"TOUCH (%.0f, %.0f) | View: %@ | Acc: '%@'", loc.x, loc.y, vClass, accLabel]];
+
+                // Nếu chạm vùng Header bên trái (nút Trở về)
+                if (loc.x <= 90.0 && loc.y <= 110.0) {
+                    [gDriverVC hideHeader];
                 }
 
-                // Kiểm tra trạng thái cây View sau khi chạm
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                // Kiểm tra lại toàn bộ cây view sau cú chạm 0.25s
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC checkAndHandleState];
                 });
                 break;
@@ -472,7 +513,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     }
 }
 
-#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (X: 0 -> 80, Y: 0 -> 100)
+#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (X: 0 -> 90, Y: 0 -> 110)
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -482,11 +523,11 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Đục lỗ vùng góc trái rộng (X: 0 -> 80, Y: 0 -> 100)
-    if (point.x <= 80.0 && point.y <= 100.0) {
+    // Đục lỗ hoàn toàn khu vực nút Back (X: 0 -> 90, Y: 0 -> 110)
+    if (point.x <= 90.0 && point.y <= 110.0) {
         DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
         [vc hideHeader];
-        return nil;
+        return nil; // Cho phép touch xuyên thẳng xuống app gốc
     }
     return hitView;
 }
@@ -496,11 +537,25 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
+    // 1. Hook UIControl sendAction
+    Class ctrlClass = [UIControl class];
+    Method mAction = class_getInstanceMethod(ctrlClass, @selector(sendAction:to:forEvent:));
+    orig_sendAction = (BOOL(*)(id, SEL, SEL, id, id, UIEvent *))method_getImplementation(mAction);
+    method_setImplementation(mAction, (IMP)custom_sendAction);
+
+    // 2. Hook UIView willRemoveSubview
+    Class viewClass = [UIView class];
+    Method mRemove = class_getInstanceMethod(viewClass, @selector(willRemoveSubview:));
+    orig_willRemoveSubview = (void(*)(id, SEL, UIView *))method_getImplementation(mRemove);
+    method_setImplementation(mRemove, (IMP)custom_willRemoveSubview);
+
+    // 3. Hook UIApplication sendEvent
     Class appClass = [UIApplication class];
     Method mSend = class_getInstanceMethod(appClass, @selector(sendEvent:));
     orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(mSend);
     method_setImplementation(mSend, (IMP)custom_sendEvent);
 
+    // 4. Khởi tạo Overlay Window
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
