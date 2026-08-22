@@ -2,94 +2,11 @@
 #import <Vision/Vision.h>
 #import <objc/runtime.h>
 
-#pragma mark - DIAGNOSTIC & LOGGING UTILITY
-
-@interface DriverDiagnostic : NSObject
-+ (NSString *)dumpCurrentHierarchy;
-+ (UIViewController *)topViewController;
-@end
-
-@implementation DriverDiagnostic
-
-+ (UIViewController *)topViewControllerWithRoot:(UIViewController *)root {
-    if ([root isKindOfClass:[UINavigationController class]]) {
-        return [self topViewControllerWithRoot:[(UINavigationController *)root visibleViewController]];
-    }
-    if ([root isKindOfClass:[UITabBarController class]]) {
-        return [self topViewControllerWithRoot:[(UITabBarController *)root selectedViewController]];
-    }
-    if (root.presentedViewController) {
-        return [self topViewControllerWithRoot:root.presentedViewController];
-    }
-    return root;
-}
-
-+ (UIViewController *)topViewController {
-    UIWindow *mainWin = nil;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]]) {
-                for (UIWindow *w in ((UIWindowScene *)s).windows) {
-                    if (!w.isHidden && ![NSStringFromClass([w class]) containsString:@"DriverOverlayWindow"]) {
-                        mainWin = w;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
-    return [self topViewControllerWithRoot:mainWin.rootViewController];
-}
-
-+ (void)dumpView:(UIView *)view indent:(int)indent output:(NSMutableString *)outStr {
-    if (!view) return;
-    for (int i = 0; i < indent; i++) [outStr appendString:@"  "];
-    [outStr appendFormat:@"[%@] frame=(%.1f, %.1f, %.1f, %.1f)", NSStringFromClass([view class]), view.frame.origin.x, view.frame.origin.y, view.frame.size.width, view.frame.size.height];
-    
-    if ([view isKindOfClass:[UILabel class]]) {
-        [outStr appendFormat:@" text=\"%@\"", [(UILabel *)view text]];
-    } else if ([view isKindOfClass:[UIButton class]]) {
-        [outStr appendFormat:@" title=\"%@\"", [(UIButton *)view titleForState:UIControlStateNormal]];
-    }
-    [outStr appendString:@"\n"];
-
-    for (UIView *sub in view.subviews) {
-        if (![NSStringFromClass([sub class]) containsString:@"Driver"]) {
-            [self dumpView:sub indent:indent + 1 output:outStr];
-        }
-    }
-}
-
-+ (NSString *)dumpCurrentHierarchy {
-    UIWindow *mainWin = nil;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]]) {
-                for (UIWindow *w in ((UIWindowScene *)s).windows) {
-                    if (!w.isHidden && ![NSStringFromClass([w class]) containsString:@"DriverOverlayWindow"]) {
-                        mainWin = w;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
-
-    NSMutableString *outStr = [NSMutableString string];
-    UIViewController *topVC = [self topViewController];
-    [outStr appendFormat:@"=== TOP VC: %@ ===\n", NSStringFromClass([topVC class])];
-    [self dumpView:mainWin indent:0 output:outStr];
-    return outStr;
-}
-
-@end
-
-#pragma mark - DATA EXTRACTION ENGINE
+#pragma mark - DATA EXTRACTION ENGINE (REACT NATIVE OPTIMIZED)
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
++ (BOOL)isReactNativeOrderDetailOpen;
 @end
 
 @implementation DriverDataExtractor
@@ -150,6 +67,43 @@
     }
     if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
     return mainWin;
+}
+
+// Duyệt cây View của React Native (Hỗ trợ RCTTextView, accessibilityLabel, text)
++ (BOOL)findReactNativeKeywordInView:(UIView *)v {
+    if (!v || v.hidden || v.alpha < 0.05) return NO;
+
+    // 1. Kiểm tra accessibilityLabel
+    NSString *acc = v.accessibilityLabel.lowercaseString;
+    if (acc.length > 0) {
+        if ([acc containsString:@"vuốt để nhận"] || [acc containsString:@"chi tiết đơn hàng"] || [acc containsString:@"giao đến địa chỉ"] || [acc containsString:@"phí giao hàng"]) {
+            return YES;
+        }
+    }
+
+    // 2. Kiểm tra thuộc tính text hoặc attributedText thông qua KVC an toàn
+    @try {
+        id textVal = [v valueForKey:@"text"];
+        if ([textVal isKindOfClass:[NSString class]]) {
+            NSString *t = [(NSString *)textVal lowercaseString];
+            if ([t containsString:@"vuốt để nhận"] || [t containsString:@"chi tiết đơn"] || [t containsString:@"phí giao hàng"]) {
+                return YES;
+            }
+        }
+    } @catch (NSException *e) {}
+
+    // 3. Đệ quy qua các Subview
+    for (UIView *sub in v.subviews) {
+        if ([self findReactNativeKeywordInView:sub]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
++ (BOOL)isReactNativeOrderDetailOpen {
+    UIWindow *win = [self getMainAppWindow];
+    return [self findReactNativeKeywordInView:win];
 }
 
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
@@ -299,7 +253,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ VÀ BỘ DEBUG HUD
+#pragma mark - UI LỚP PHỦ NỀN CAM
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -307,14 +261,13 @@
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
-@property (nonatomic, strong) UIButton *debugBtn;
-@property (nonatomic, strong) UILabel *hudLogLabel;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
+@property (nonatomic, assign) BOOL isShowing;
 
+- (void)checkAndHandleState;
 - (void)showAndExtract;
 - (void)hideHeader;
-- (void)logEvent:(NSString *)text;
 @end
 
 static DriverHelperVC *gDriverVC = nil;
@@ -326,9 +279,8 @@ static DriverHelperVC *gDriverVC = nil;
     gDriverVC = self;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
-    CGFloat sh = [UIScreen mainScreen].bounds.size.height;
 
-    // 1. Lớp phủ nền cam 96pt
+    // Lớp phủ nền cam 96pt (Mặc định ẩn 100% ở màn hình chính)
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -338,7 +290,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
-    // Nút Zalo góc phải
+    // Hàng 1 (Y = 44): Nút Zalo góc phải
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
@@ -377,55 +329,23 @@ static DriverHelperVC *gDriverVC = nil;
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
-
-    // 2. NÚT CHẨN ĐOÁN
-    self.debugBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.debugBtn.frame = CGRectMake(sw - 85, sh - 140, 78, 30);
-    self.debugBtn.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.7];
-    [self.debugBtn setTitle:@"🔍 Soi View" forState:UIControlStateNormal];
-    [self.debugBtn setTitleColor:[UIColor cyanColor] forState:UIControlStateNormal];
-    self.debugBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.0];
-    self.debugBtn.layer.cornerRadius = 15;
-    self.debugBtn.layer.borderWidth = 1;
-    self.debugBtn.layer.borderColor = [UIColor cyanColor].CGColor;
-    [self.debugBtn addTarget:self action:@selector(onInspectTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.debugBtn];
-
-    // 3. HUD LOG
-    self.hudLogLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, sh - 110, sw - 20, 20)];
-    self.hudLogLabel.backgroundColor = [UIColor colorWithWhite:0 alpha:0.65];
-    self.hudLogLabel.textColor = [UIColor whiteColor];
-    self.hudLogLabel.font = [UIFont systemFontOfSize:10.0];
-    self.hudLogLabel.text = @" HUD: Dylib Sẵn Sàng...";
-    self.hudLogLabel.layer.cornerRadius = 4;
-    self.hudLogLabel.clipsToBounds = YES;
-    [self.view addSubview:self.hudLogLabel];
 }
 
-- (void)logEvent:(NSString *)text {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        self.hudLogLabel.text = [NSString stringWithFormat:@" %@", text];
-    });
-}
-
-- (void)onInspectTapped {
-    NSString *dump = [DriverDiagnostic dumpCurrentHierarchy];
-    [UIPasteboard generalPasteboard].string = dump;
-
-    UIViewController *top = [DriverDiagnostic topViewController];
-    NSString *topName = NSStringFromClass([top class]);
-
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Chẩn Đoán View"
-                                                                   message:[NSString stringWithFormat:@"Top VC: %@\n(Đã copy toàn bộ cây View vào Clipboard!)", topName]
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Bật Test Thanh Cam" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self showAndExtract];
-    }]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+- (void)checkAndHandleState {
+    BOOL isDetail = [DriverDataExtractor isReactNativeOrderDetailOpen];
+    if (isDetail) {
+        if (!self.isShowing) {
+            [self showAndExtract];
+        }
+    } else {
+        if (self.isShowing) {
+            [self hideHeader];
+        }
+    }
 }
 
 - (void)showAndExtract {
+    self.isShowing = YES;
     self.orangeHeaderBar.hidden = NO;
     self.orangeHeaderBar.alpha = 0.6;
     self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
@@ -452,6 +372,7 @@ static DriverHelperVC *gDriverVC = nil;
 }
 
 - (void)hideHeader {
+    self.isShowing = NO;
     self.orangeHeaderBar.hidden = YES;
 }
 
@@ -477,13 +398,7 @@ static DriverHelperVC *gDriverVC = nil;
 
 @end
 
-#pragma mark - GLOBAL CONTROLLER & TOUCH HOOK CHẨN ĐOÁN
-
-static void (*orig_presentVC)(id, SEL, UIViewController *, BOOL, id);
-static void custom_presentVC(UIViewController *self, SEL _cmd, UIViewController *vcToPresent, BOOL flag, id completion) {
-    [gDriverVC logEvent:[NSString stringWithFormat:@"Present: %@", NSStringFromClass([vcToPresent class])]];
-    orig_presentVC(self, _cmd, vcToPresent, flag, completion);
-}
+#pragma mark - HOOK TOUCH SEND EVENT CHO REACT NATIVE
 
 static void (*orig_sendEvent)(id, SEL, UIEvent *);
 static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
@@ -491,8 +406,10 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     if (event.type == UIEventTypeTouches) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
-                UIViewController *top = [DriverDiagnostic topViewController];
-                [gDriverVC logEvent:[NSString stringWithFormat:@"Touch: TopVC = %@", NSStringFromClass([top class])]];
+                // Đợi 0.3s cho React Native bridge cập nhật cây view
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [gDriverVC checkAndHandleState];
+                });
                 break;
             }
         }
@@ -523,19 +440,13 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
-    // 1. Hook presentViewController:animated:completion:
-    Class vcClass = [UIViewController class];
-    Method mPresent = class_getInstanceMethod(vcClass, @selector(presentViewController:animated:completion:));
-    orig_presentVC = (void(*)(id, SEL, UIViewController *, BOOL, id))method_getImplementation(mPresent);
-    method_setImplementation(mPresent, (IMP)custom_presentVC);
-
-    // 2. Hook UIApplication sendEvent:
+    // 1. Hook UIApplication sendEvent
     Class appClass = [UIApplication class];
     Method mSend = class_getInstanceMethod(appClass, @selector(sendEvent:));
     orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(mSend);
     method_setImplementation(mSend, (IMP)custom_sendEvent);
 
-    // 3. Khởi tạo Overlay Window
+    // 2. Khởi tạo Window
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
