@@ -5,7 +5,7 @@
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
-+ (void)detectCurrentScreenHeader:(void(^)(BOOL isMainScreen, BOOL isOrderDetail))completion;
++ (void)detectCurrentScreenHeader:(void(^)(BOOL isMainScreen))completion;
 @end
 
 @implementation DriverDataExtractor
@@ -69,10 +69,10 @@
 }
 
 // Kiểm tra chữ trên dải cam trên cùng
-+ (void)detectCurrentScreenHeader:(void(^)(BOOL isMainScreen, BOOL isOrderDetail))completion {
++ (void)detectCurrentScreenHeader:(void(^)(BOOL isMainScreen))completion {
     UIWindow *win = [self getMainAppWindow];
     if (!win) {
-        if (completion) completion(NO, NO);
+        if (completion) completion(YES);
         return;
     }
 
@@ -87,32 +87,28 @@
     UIGraphicsEndImageContext();
 
     if (!headerImg || !headerImg.CGImage) {
-        if (completion) completion(NO, NO);
+        if (completion) completion(YES);
         return;
     }
 
     VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
         BOOL isMain = NO;
-        BOOL isDetail = NO;
 
         for (VNRecognizedTextObservation *obs in request.results) {
             VNRecognizedText *top = [[obs topCandidates:1] firstObject];
             if (top) {
                 NSString *txt = [top.string lowercaseString];
                 
-                // Nếu xuất hiện chữ "Đơn hàng" -> Màn hình chính
+                // NẾU CÓ CHỮ "ĐƠN HÀNG" -> ĐANG Ở MÀN HÌNH CHÍNH
                 if ([txt containsString:@"đơn hàng"] || [txt containsString:@"don hang"] || [txt containsString:@"các đơn"]) {
                     isMain = YES;
                     break;
-                } else if (txt.length >= 2) {
-                    // Nếu là tên quán bất kỳ khác chữ Đơn hàng -> Chi tiết đơn
-                    isDetail = YES;
                 }
             }
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(isMain, isDetail);
+            if (completion) completion(isMain);
         });
     }];
 
@@ -274,7 +270,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ NỀN CAM (TỰ ĐỘNG THEO TIÊU ĐỀ)
+#pragma mark - UI LỚP PHỦ NỀN CAM (CHUẨN TỰ ĐỘNG)
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -299,7 +295,7 @@
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // Lớp phủ nền cam 96pt (Mặc định ẩn)
+    // Lớp phủ nền cam 96pt (Mặc định ẩn hoàn toàn ở màn hình chính)
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -353,19 +349,24 @@
 }
 
 - (void)startHeaderMonitor {
-    self.monitorTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 target:self selector:@selector(checkHeaderState) userInfo:nil repeats:YES];
+    self.monitorTimer = [NSTimer scheduledTimerWithTimeInterval:0.3 target:self selector:@selector(checkHeaderState) userInfo:nil repeats:YES];
     [[NSRunLoop mainRunLoop] addTimer:self.monitorTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)checkHeaderState {
-    // Chỉ kiểm tra khi thanh cam đang ẩn để tìm thời điểm mở đơn
-    if (!self.isShowing) {
-        [DriverDataExtractor detectCurrentScreenHeader:^(BOOL isMainScreen, BOOL isOrderDetail) {
-            if (isOrderDetail && !isMainScreen) {
+    [DriverDataExtractor detectCurrentScreenHeader:^(BOOL isMainScreen) {
+        if (isMainScreen) {
+            // ĐANG Ở MÀN HÌNH CHÍNH (CÓ CHỮ "ĐƠN HÀNG") -> PHẢI ẨN THANH CAM
+            if (self.isShowing) {
+                [self hideHeader];
+            }
+        } else {
+            // ĐÃ VÀO CHI TIẾT ĐƠN (TIÊU ĐỀ LÀ TÊN QUÁN, MẤT CHỮ "ĐƠN HÀNG") -> KÍCH HOẠT NGAY
+            if (!self.isShowing) {
                 [self triggerExtraction];
             }
-        }];
-    }
+        }
+    }];
 }
 
 - (void)triggerExtraction {
@@ -422,7 +423,7 @@
 
 @end
 
-#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (TỰ ĐẨY VỀ ẨN KHI BẤM BACK)
+#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -432,12 +433,11 @@
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Khi người dùng bấm vào vùng nút Trở về (<) (X: 0 -> 45, Y: 0 -> 75)
+    // Khi bấm nút Trở về (<) góc trái (X: 0 -> 45, Y: 0 -> 75)
     if (point.x <= 45.0 && point.y <= 75.0) {
-        // Tự động thu gọn thanh cam ngay để trả về màn hình chính
         DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
         [vc hideHeader];
-        return nil; // Cho phép touch xuyên xuống nút < của app gốc
+        return nil;
     }
     return hitView;
 }
