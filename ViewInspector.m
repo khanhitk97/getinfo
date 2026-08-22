@@ -150,7 +150,6 @@
                 NSString *lower = [l lowercaseString];
                 CGRect boxI = [convertedBoxes[i] CGRectValue];
 
-                // 1. Quét SĐT ở mục "Mua hàng tại"
                 if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"] || [lower containsString:@"cơm"]) {
                     NSArray *pList = [self extractPhonesFromText:l];
                     for (NSString *p in pList) {
@@ -158,7 +157,6 @@
                     }
                 }
 
-                // 2. Bóc tách Phí giao hàng
                 if ([lower containsString:@"phí giao hàng"] || [lower containsString:@"giao hàng"]) {
                     NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
                     if (sameLineMatch) {
@@ -190,9 +188,7 @@
                     }
                 }
 
-                // 3. BÓC TÁCH PHÍ KHÍCH LỆ TÀI XẾ (ĐÃ FIX CHÍNH XÁC)
                 if ([lower containsString:@"khích lệ"] || [lower containsString:@"khich le"]) {
-                    // Nếu dính liền cùng dòng
                     NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
                     if (sameLineMatch) {
                         bonusFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
@@ -206,7 +202,6 @@
                             CGRect boxJ = [convertedBoxes[j] CGRectValue];
                             CGFloat midY_J = CGRectGetMidY(boxJ);
 
-                            // Xét các khối chữ nằm bên phải và cùng hàng (chênh lệch Y < 0.025)
                             if (boxJ.origin.x > boxI.origin.x && fabs(midY_J - midY_I) < 0.025) {
                                 NSString *valStr = [strings[j] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                                 CGFloat dist = fabs(midY_J - midY_I);
@@ -219,7 +214,6 @@
                         }
 
                         if (detectedBonus) {
-                            // Kiểm tra nếu là số 0 hoặc nhận diện nhầm ký tự đơn lẻ (O, o, Q, D, -)
                             NSString *digitsOnly = [[detectedBonus componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
                             NSTextCheckingResult *moneyMatch = [moneyRegex firstMatchInString:detectedBonus options:0 range:NSMakeRange(0, detectedBonus.length)];
 
@@ -234,7 +228,6 @@
                     }
                 }
 
-                // 4. Bóc tách Ghi chú
                 if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
                     NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
                     for (NSUInteger k = i + 1; k < strings.count; k++) {
@@ -284,6 +277,7 @@
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
+@property (nonatomic, strong) UIButton *closeBtn;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
 @property (nonatomic, assign) BOOL isShowing;
@@ -312,6 +306,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
+    // Nút Zalo góc phải
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
@@ -324,13 +319,24 @@ static DriverHelperVC *gDriverVC = nil;
     [self.zaloBtn addTarget:self action:@selector(openZaloDirectly) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.zaloBtn];
 
-    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 44, sw - 120, 22)];
+    // Nút Đóng (✕) cạnh Zalo
+    self.closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.closeBtn.frame = CGRectMake(sw - 92, 43, 22, 24);
+    [self.closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    [self.closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self.closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
+    [self.closeBtn addTarget:self action:@selector(hideHeader) forControlEvents:UIControlEventTouchUpInside];
+    [self.orangeHeaderBar addSubview:self.closeBtn];
+
+    // Dòng Phí Ship & Khích Lệ (Dịch lề trái X = 54 để chừa không gian bấm nút <)
+    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(54, 44, sw - 150, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
     self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 67, sw - 128, 26)];
+    // Hàng 2 (Y = 67): Ghi chú
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(54, 67, sw - 134, 26)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.noteLabel.numberOfLines = 2;
@@ -338,6 +344,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.noteLabel.text = @"📌 Đang phân tích...";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
+    // Nút Gọi phụ
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.callSecondBtn.frame = CGRectMake(sw - 78, 68, 72, 20);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
@@ -381,10 +388,10 @@ static DriverHelperVC *gDriverVC = nil;
             self.callSecondBtn.hidden = NO;
             self.callSecondBtn.accessibilityValue = randomSecondPhone;
             [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [randomSecondPhone substringFromIndex:MAX(0, (int)randomSecondPhone.length - 4)]] forState:UIControlStateNormal];
-            self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 128, 26);
+            self.noteLabel.frame = CGRectMake(54, 67, [UIScreen mainScreen].bounds.size.width - 134, 26);
         } else {
             self.callSecondBtn.hidden = YES;
-            self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 56, 26);
+            self.noteLabel.frame = CGRectMake(54, 67, [UIScreen mainScreen].bounds.size.width - 62, 26);
         }
     }];
 }
@@ -416,7 +423,7 @@ static DriverHelperVC *gDriverVC = nil;
 
 @end
 
-#pragma mark - HOOK TOUCH SEND EVENT CHO REACT NATIVE
+#pragma mark - HOOK TOUCH EVENT (TỰ ĐỘNG ĐÓNG KHI BẤM NÚT TRỞ VỀ GÓC TRÁI)
 
 static void (*orig_sendEvent)(id, SEL, UIEvent *);
 static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
@@ -424,7 +431,16 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     if (event.type == UIEventTypeTouches) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                CGPoint loc = [t locationInView:nil];
+                // Nếu cú chạm nằm ở khu vực nút Trở về (<) góc trên cùng bên trái
+                if (loc.x <= 70.0 && loc.y <= 96.0) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [gDriverVC hideHeader];
+                    });
+                }
+                
+                // Đồng thời kiểm tra trạng thái cây View sau 0.25s
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC checkAndHandleState];
                 });
                 break;
@@ -433,7 +449,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     }
 }
 
-#pragma mark - ENTRY POINT & HIT-TEST
+#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (X: 0 -> 70, Y: 0 -> 96)
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -443,11 +459,11 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Đục lỗ góc trái (X: 0 -> 45, Y: 0 -> 75) cho nút Trở về (<)
-    if (point.x <= 45.0 && point.y <= 75.0) {
+    // Đục lỗ hoàn toàn góc trái cho nút Trở về (<) của app gốc
+    if (point.x <= 70.0 && point.y <= 96.0) {
         DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
-        [vc hideHeader];
-        return nil;
+        [vc hideHeader]; // Đóng ngay thanh cam
+        return nil;      // Truyền chạm xuống nút < của app gốc
     }
     return hitView;
 }
