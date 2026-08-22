@@ -118,9 +118,8 @@
                         }
                     }
 
-                    // 2. BÓC TÁCH PHÍ GIAO HÀNG (Tránh tầng Tổng món ở trên)
+                    // 2. Bóc tách Phí giao hàng
                     if ([lower containsString:@"phí giao hàng"] || [lower containsString:@"giao hàng"]) {
-                        // Nếu dính cùng dòng
                         NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
                         if (sameLineMatch) {
                             shipFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
@@ -133,8 +132,6 @@
                                 if (i == j) continue;
                                 CGRect boxJ = [convertedBoxes[j] CGRectValue];
                                 CGFloat midY_J = CGRectGetMidY(boxJ);
-                                
-                                // Chỉ xét các ô nằm bên phải và cùng hàng (hoặc chênh lệch Y cực nhỏ < 0.02)
                                 if (boxJ.origin.x > boxI.origin.x && fabs(midY_J - midY_I) < 0.022) {
                                     NSString *valStr = strings[j];
                                     NSTextCheckingResult *valMatch = [moneyRegex firstMatchInString:valStr options:0 range:NSMakeRange(0, valStr.length)];
@@ -147,25 +144,13 @@
                                     }
                                 }
                             }
-                            
                             if (bestVal) {
                                 shipFee = [bestVal stringByAppendingString:@"đ"];
-                            } else {
-                                // Fallback: Quét phần tử ngay sau nhãn nhưng bỏ qua chuỗi chứa từ "tổng" hoặc "món"
-                                for (NSUInteger k = i + 1; k < MIN(strings.count, i + 3); k++) {
-                                    NSString *candidate = strings[k];
-                                    if ([candidate.lowercaseString containsString:@"tổng"] || [candidate.lowercaseString containsString:@"món"]) continue;
-                                    NSTextCheckingResult *cMatch = [moneyRegex firstMatchInString:candidate options:0 range:NSMakeRange(0, candidate.length)];
-                                    if (cMatch) {
-                                        shipFee = [[candidate substringWithRange:cMatch.range] stringByAppendingString:@"đ"];
-                                        break;
-                                    }
-                                }
                             }
                         }
                     }
 
-                    // 3. BÓC TÁCH PHÍ KHÍCH LỆ TÀI XẾ
+                    // 3. Bóc tách Phí khích lệ tài xế
                     if ([lower containsString:@"khích lệ"]) {
                         CGFloat midY_I = CGRectGetMidY(boxI);
                         for (NSUInteger j = 0; j < strings.count; j++) {
@@ -186,13 +171,25 @@
                         }
                     }
 
-                    // 4. Bóc tách Ghi chú
+                    // 4. BÓC TÁCH GHI CHÚ (GOM TẤT CẢ CÁC DÒNG XUỐNG HÀNG TIẾP THEO)
                     if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
-                        if (i + 1 < strings.count) {
-                            NSString *nextStr = strings[i+1];
-                            if (![nextStr.lowercaseString containsString:@"tài xế vui lòng"]) {
-                                note = nextStr;
+                        NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
+                        for (NSUInteger k = i + 1; k < strings.count; k++) {
+                            NSString *nextCandidate = strings[k];
+                            NSString *nextLower = [nextCandidate lowercaseString];
+
+                            // Dừng lại khi chạm vào các dòng cảnh báo hoặc nút nhận đơn
+                            if ([nextLower containsString:@"tài xế vui lòng"] || 
+                                [nextLower containsString:@"vuốt để nhận"] || 
+                                [nextLower containsString:@"tài xế được nhận"]) {
+                                break;
                             }
+                            if (nextCandidate.length > 0) {
+                                [noteLines addObject:nextCandidate];
+                            }
+                        }
+                        if (noteLines.count > 0) {
+                            note = [noteLines componentsJoinedByString:@", "];
                         }
                     }
                 }
@@ -219,7 +216,7 @@
 
 @end
 
-#pragma mark - UI SÁT MÉP TRÊN CÙNG (CHIỀU CAO 92pt)
+#pragma mark - UI SÁT MÉP TRÊN CÙNG (HỖ TRỢ GHI CHÚ NHIỀU DÒNG)
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIButton *bubbleBtn;
@@ -240,7 +237,7 @@
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // Bong bóng nhỏ góc phải
+    // Bong bóng nổi góc phải
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.bubbleBtn.frame = CGRectMake(sw - 54, 150, 46, 46);
     self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:0.98];
@@ -254,8 +251,8 @@
     [self.bubbleBtn addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanBubble:)]];
     [self.view addSubview:self.bubbleBtn];
 
-    // Lớp phủ nền cam rút gọn cao 92pt
-    self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 92)];
+    // Lớp phủ nền cam 96pt
+    self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
     self.orangeHeaderBar.layer.shadowOpacity = 0.25;
@@ -293,16 +290,18 @@
     self.feeLabel.text = @"🛵 Ship: -- | 🎁 Khích lệ: 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
-    // Hàng 2 (Y = 68): Ghi chú & Nút Gọi phụ
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 68, sw - 128, 18)];
+    // Hàng 2 (Y = 67): Ghi chú (Hỗ trợ 2 dòng)
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 67, sw - 128, 26)];
     self.noteLabel.textColor = [UIColor yellowColor];
-    self.noteLabel.font = [UIFont boldSystemFontOfSize:11.0];
+    self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
+    self.noteLabel.numberOfLines = 2;
+    self.noteLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.noteLabel.text = @"📌 Ghi chú: Không có ghi chú";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
     // Nút Gọi phụ (chỉ hiện khi có 2 SĐT)
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.callSecondBtn.frame = CGRectMake(sw - 78, 67, 72, 20);
+    self.callSecondBtn.frame = CGRectMake(sw - 78, 68, 72, 20);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
     [self.callSecondBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.callSecondBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10.0];
@@ -343,10 +342,10 @@
             self.callSecondBtn.hidden = NO;
             self.callSecondBtn.accessibilityValue = randomSecondPhone;
             [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [randomSecondPhone substringFromIndex:MAX(0, (int)randomSecondPhone.length - 4)]] forState:UIControlStateNormal];
-            self.noteLabel.frame = CGRectMake(46, 68, [UIScreen mainScreen].bounds.size.width - 128, 18);
+            self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 128, 26);
         } else {
             self.callSecondBtn.hidden = YES;
-            self.noteLabel.frame = CGRectMake(46, 68, [UIScreen mainScreen].bounds.size.width - 56, 18);
+            self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 56, 26);
         }
     }];
 }
