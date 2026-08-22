@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Vision/Vision.h>
 
-#pragma mark - DATA EXTRACTION ENGINE (FIX CHÍNH XÁC THEO TỌA ĐỘ)
+#pragma mark - DATA EXTRACTION ENGINE
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
@@ -66,18 +66,17 @@
 
         [self forceScrollDown:mainWin];
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
             [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
             UIImage *fullSnapshot = UIGraphicsGetImageFromCurrentImageContext();
             UIGraphicsEndImageContext();
 
             if (!fullSnapshot || !fullSnapshot.CGImage) {
-                if (completion) completion(@"--", @"0", @"(Lỗi chụp màn hình)", nil, nil);
+                if (completion) completion(@"--", @"0đ", @"(Lỗi chụp)", nil, nil);
                 return;
             }
 
-            // Cắt chi tiết món ăn
             CGFloat scale = fullSnapshot.scale;
             CGFloat cropY = mainWin.bounds.size.height * 0.35;
             CGFloat cropH = mainWin.bounds.size.height * 0.55;
@@ -87,68 +86,60 @@
             CGImageRelease(imgRef);
 
             VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
-                
-                struct TextItem {
-                    __unsafe_unretained NSString *text;
-                    CGRect box;
-                };
-                
-                NSMutableArray<NSValue *> *boxes = [NSMutableArray array];
                 NSMutableArray<NSString *> *strings = [NSMutableArray array];
-
                 for (VNRecognizedTextObservation *obs in request.results) {
                     VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-                    if (top) {
-                        [strings addObject:top.string];
-                        [boxes addObject:[NSValue valueWithCGRect:obs.boundingBox]];
-                    }
+                    if (top) [strings addObject:top.string];
                 }
 
-                __block NSString *shipFee = @"--";
-                __block NSString *bonusFee = @"0đ";
-                __block NSString *note = @"Không có ghi chú";
+                NSString *shipFee = @"--";
+                NSString *bonusFee = @"0đ";
+                NSString *note = @"Không có ghi chú";
                 NSMutableArray<NSString *> *shopPhones = [NSMutableArray array];
 
                 for (NSUInteger i = 0; i < strings.count; i++) {
                     NSString *l = strings[i];
                     NSString *lower = [l lowercaseString];
-                    CGRect box = [boxes[i] CGRectValue];
 
-                    // 1. Lọc SĐT trong phần "Mua hàng tại"
-                    if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bún thịt"] || [lower containsString:@"quán"]) {
+                    // 1. Quét SĐT quán
+                    if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"sâm mix"] || [lower containsString:@"quán"] || [lower containsString:@"bún"]) {
                         NSArray *pList = [self extractPhonesFromText:l];
                         for (NSString *p in pList) {
                             if (![shopPhones containsObject:p]) [shopPhones addObject:p];
                         }
                     }
 
-                    // 2. Tìm giá trị cùng hàng ngang với "Phí giao hàng" (Khoảng chênh lệch Y < 0.02)
+                    // 2. Bóc tách Phí giao hàng (Hỗ trợ cả cùng dòng hoặc dòng tiếp theo)
                     if ([lower containsString:@"phí giao hàng"]) {
-                        for (NSUInteger j = 0; j < strings.count; j++) {
-                            if (i == j) continue;
-                            CGRect valBox = [boxes[j] CGRectValue];
-                            if (fabs(valBox.origin.y - box.origin.y) < 0.025 && valBox.origin.x > box.origin.x) {
-                                NSString *numOnly = [[strings[j] componentsSeparatedByCharactersInSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789."] invertedSet]] componentsJoinedByString:@""];
-                                if (numOnly.length > 0) shipFee = [numOnly stringByAppendingString:@"đ"];
-                                break;
+                        // Tìm số tiền dạng 17.000 hoặc 17000 ngay trên dòng này
+                        NSRegularExpression *feeRegex = [NSRegularExpression regularExpressionWithPattern:@"[0-9]{1,3}(?:\\.[0-9]{3})+" options:0 error:nil];
+                        NSTextCheckingResult *match = [feeRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
+                        if (match) {
+                            shipFee = [[l substringWithRange:match.range] stringByAppendingString:@"đ"];
+                        } else if (i + 1 < strings.count) {
+                            NSString *next = strings[i+1];
+                            NSTextCheckingResult *nextMatch = [feeRegex firstMatchInString:next options:0 range:NSMakeRange(0, next.length)];
+                            if (nextMatch) {
+                                shipFee = [[next substringWithRange:nextMatch.range] stringByAppendingString:@"đ"];
+                            } else {
+                                shipFee = [next stringByAppendingString:@"đ"];
                             }
                         }
                     }
 
-                    // 3. Tìm giá trị cùng hàng ngang với "Phí khích lệ"
+                    // 3. Bóc tách Phí khích lệ
                     if ([lower containsString:@"phí khích lệ"]) {
-                        for (NSUInteger j = 0; j < strings.count; j++) {
-                            if (i == j) continue;
-                            CGRect valBox = [boxes[j] CGRectValue];
-                            if (fabs(valBox.origin.y - box.origin.y) < 0.025 && valBox.origin.x > box.origin.x) {
-                                NSString *numOnly = [[strings[j] componentsSeparatedByCharactersInSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789."] invertedSet]] componentsJoinedByString:@""];
-                                if (numOnly.length > 0) bonusFee = [numOnly stringByAppendingString:@"đ"];
-                                break;
+                        if (i + 1 < strings.count) {
+                            NSString *next = strings[i+1];
+                            if ([next isEqualToString:@"0"] || [next containsString:@"0"]) {
+                                bonusFee = @"0đ";
+                            } else {
+                                bonusFee = [next containsString:@"đ"] ? next : [next stringByAppendingString:@"đ"];
                             }
                         }
                     }
 
-                    // 4. Bóc tách chính xác Ghi chú dặn dò (Bỏ qua câu disclaimer "Tài xế vui lòng đọc kỹ...")
+                    // 4. Bóc tách Ghi chú
                     if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò shipper"]) {
                         if (i + 1 < strings.count) {
                             NSString *nextStr = strings[i+1];
@@ -161,7 +152,7 @@
 
                 NSString *secondPhone = nil;
                 if (shopPhones.count >= 2) {
-                    secondPhone = shopPhones[1]; // Lấy SĐT thứ 2
+                    secondPhone = shopPhones[1];
                 }
 
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -181,7 +172,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ NỀN CAM CHUẨN IPHONE 12 PRO MAX
+#pragma mark - UI LỚP PHỦ NỀN CAM ĐÈ TRỌN VẸN HEADER
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIButton *toggleBtn;
@@ -202,8 +193,8 @@
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // Lớp nền màu cam phủ từ Y = 84 xuống Y = 148 (Chừa trọn vẹn Navigation Header + Tên Quán + Nút < ở trên)
-    self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 84, sw, 64)];
+    // Lớp nền màu cam phủ kín từ đỉnh màn hình xuống Y = 140 (Đè lên tên quán cũ)
+    self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 140)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
     self.orangeHeaderBar.layer.shadowOpacity = 0.25;
@@ -212,29 +203,29 @@
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
-    // Nút Zalo đặt ở góc phải thanh Nav gốc (Y = 48, ngang hàng tên quán, né tai thỏ)
+    // Hàng 1 (Y = 48, ngang hàng nút Trở về <): Nút Zalo nằm ở góc phải
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.zaloBtn.frame = CGRectMake(sw - 68, 48, 60, 26);
+    self.zaloBtn.frame = CGRectMake(sw - 74, 48, 64, 28);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
     [self.zaloBtn setTitle:@"💬 Zalo" forState:UIControlStateNormal];
     [self.zaloBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.zaloBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
-    self.zaloBtn.layer.cornerRadius = 13;
-    self.zaloBtn.layer.borderWidth = 0.8;
+    self.zaloBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12.0];
+    self.zaloBtn.layer.cornerRadius = 14;
+    self.zaloBtn.layer.borderWidth = 1.0;
     self.zaloBtn.layer.borderColor = [UIColor whiteColor].CGColor;
     [self.zaloBtn addTarget:self action:@selector(openZaloDirectly) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.zaloBtn];
+    [self.orangeHeaderBar addSubview:self.zaloBtn];
 
-    // Hàng 1: Phí Ship & Phí Khích Lệ (Y = 6 trong bảng cam)
-    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 6, sw - 95, 24)];
+    // Hàng 2: Phí Ship & Phí Khích Lệ (Y = 82)
+    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 82, sw - 105, 24)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
     self.feeLabel.text = @"🛵 Ship: --  |  🎁 Khích lệ: 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
-    // Nút Gọi phụ (chỉ hiện khi có 2 SĐT)
+    // Nút Gọi phụ (chỉ hiện khi có 2 SĐT, nằm bên phải hàng phí)
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.callSecondBtn.frame = CGRectMake(sw - 80, 5, 72, 24);
+    self.callSecondBtn.frame = CGRectMake(sw - 82, 81, 74, 25);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
     [self.callSecondBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.callSecondBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10.5];
@@ -243,8 +234,8 @@
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
 
-    // Hàng 2: Ghi chú (Y = 34 trong bảng cam)
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 34, sw - 24, 22)];
+    // Hàng 3: Ghi chú (Y = 110)
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 110, sw - 32, 22)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:11.5];
     self.noteLabel.text = @"📌 Ghi chú: Không có ghi chú";
@@ -252,13 +243,13 @@
 
     // Nút kích hoạt nổi
     self.toggleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.toggleBtn.frame = CGRectMake(sw - 60, 48, 52, 26);
+    self.toggleBtn.frame = CGRectMake(sw - 64, 48, 54, 28);
     self.toggleBtn.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.25];
     [self.toggleBtn setTitle:@"🛵 Đơn" forState:UIControlStateNormal];
     [self.toggleBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.toggleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.0];
-    self.toggleBtn.layer.cornerRadius = 13;
-    self.toggleBtn.layer.borderWidth = 0.8;
+    self.toggleBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
+    self.toggleBtn.layer.cornerRadius = 14;
+    self.toggleBtn.layer.borderWidth = 1.0;
     self.toggleBtn.layer.borderColor = [UIColor whiteColor].CGColor;
     [self.toggleBtn addTarget:self action:@selector(toggleOrangeHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.toggleBtn];
@@ -318,7 +309,7 @@
 
 @end
 
-#pragma mark - ENTRY POINT & HIT-TEST
+#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -327,8 +318,11 @@
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
-    // Đục lỗ vùng nút Back (<) của app gốc
-    if (point.x <= 55.0 && point.y <= 85.0) return nil;
+
+    // Đục lỗ vùng nút Trở về (<) góc trái (X: 0 -> 55, Y: 0 -> 88)
+    if (point.x <= 55.0 && point.y <= 88.0) {
+        return nil;
+    }
     return hitView;
 }
 @end
