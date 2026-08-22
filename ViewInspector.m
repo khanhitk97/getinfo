@@ -1,448 +1,168 @@
 #import <UIKit/UIKit.h>
-#import <Vision/Vision.h>
 #import <objc/runtime.h>
 
-#pragma mark - DATA EXTRACTION ENGINE
+#pragma mark - 1. OVERLAY UI & LIVE TOUCH INSPECTOR
 
-@interface DriverDataExtractor : NSObject
-+ (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
-+ (BOOL)isReactNativeOrderDetailOpen;
-@end
-
-@implementation DriverDataExtractor
-
-+ (NSArray<NSString *> *)extractPhonesFromText:(NSString *)text {
-    if (!text || text.length < 8) return @[];
-    NSMutableArray<NSString *> *validPhones = [NSMutableArray array];
-    NSString *pattern = @"(?:\\+?84|0)(?:3[2-9]|5[6|8|9]|7[0|6-9]|8[1-9]|9[0-9]|2[0-9]{2})[0-9\\s.-]{6,15}";
-    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
-    NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
-
-    for (NSTextCheckingResult *m in matches) {
-        NSString *matchedStr = [text substringWithRange:m.range];
-        NSString *digitsOnly = [[matchedStr componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
-        if ([digitsOnly hasPrefix:@"84"] && digitsOnly.length >= 11) {
-            digitsOnly = [@"0" stringByAppendingString:[digitsOnly substringFromIndex:2]];
-        }
-        NSString *clean = nil;
-        if (digitsOnly.length >= 10 && ([digitsOnly hasPrefix:@"03"] || [digitsOnly hasPrefix:@"05"] || [digitsOnly hasPrefix:@"07"] || [digitsOnly hasPrefix:@"08"] || [digitsOnly hasPrefix:@"09"])) {
-            clean = [digitsOnly substringToIndex:10];
-        } else if (digitsOnly.length >= 11 && [digitsOnly hasPrefix:@"02"]) {
-            clean = [digitsOnly substringToIndex:11];
-        }
-        if (clean && ![validPhones containsObject:clean]) {
-            [validPhones addObject:clean];
-        }
-    }
-    return validPhones;
-}
-
-+ (UIWindow *)getMainAppWindow {
-    UIWindow *mainWin = nil;
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *s in [UIApplication sharedApplication].connectedScenes) {
-            if ([s isKindOfClass:[UIWindowScene class]]) {
-                for (UIWindow *w in ((UIWindowScene *)s).windows) {
-                    if (!w.isHidden && ![NSStringFromClass([w class]) containsString:@"DriverOverlayWindow"]) {
-                        mainWin = w;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    if (!mainWin) mainWin = [UIApplication sharedApplication].windows.firstObject;
-    return mainWin;
-}
-
-+ (UIScrollView *)findMainScrollView:(UIView *)view {
-    if (!view) return nil;
-    if ([view isKindOfClass:[UIScrollView class]]) {
-        UIScrollView *sv = (UIScrollView *)view;
-        if (sv.contentSize.height > sv.bounds.size.height) {
-            return sv;
-        }
-    }
-    for (UIView *sub in view.subviews) {
-        UIScrollView *found = [self findMainScrollView:sub];
-        if (found) return found;
-    }
-    return nil;
-}
-
-+ (BOOL)findReactNativeKeywordInView:(UIView *)v {
-    if (!v || v.hidden || v.alpha < 0.05) return NO;
-
-    NSString *acc = v.accessibilityLabel.lowercaseString;
-    if (acc.length > 0) {
-        if ([acc containsString:@"vuốt để nhận"] || [acc containsString:@"chi tiết đơn hàng"] || [acc containsString:@"giao đến địa chỉ"] || [acc containsString:@"phí giao hàng"]) {
-            return YES;
-        }
-    }
-
-    @try {
-        id textVal = [v valueForKey:@"text"];
-        if ([textVal isKindOfClass:[NSString class]]) {
-            NSString *t = [(NSString *)textVal lowercaseString];
-            if ([t containsString:@"vuốt để nhận"] || [t containsString:@"chi tiết đơn"] || [t containsString:@"phí giao hàng"]) {
-                return YES;
-            }
-        }
-    } @catch (NSException *e) {}
-
-    for (UIView *sub in v.subviews) {
-        if ([self findReactNativeKeywordInView:sub]) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-+ (BOOL)isReactNativeOrderDetailOpen {
-    UIWindow *win = [self getMainAppWindow];
-    return [self findReactNativeKeywordInView:win];
-}
-
-+ (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
-    UIWindow *mainWin = [self getMainAppWindow];
-    if (!mainWin) {
-        if (completion) completion(@"--", @"0đ", @"(Lỗi cửa sổ)", nil, nil);
-        return;
-    }
-
-    UIScrollView *sv = [self findMainScrollView:mainWin];
-    __block CGPoint originalOffset = sv ? sv.contentOffset : CGPointZero;
-
-    // 1. Nhảy xuống đáy để React Native nạp dữ liệu
-    if (sv && sv.contentSize.height > sv.bounds.size.height) {
-        CGPoint bottomOffset = CGPointMake(0, sv.contentSize.height - sv.bounds.size.height + sv.adjustedContentInset.bottom);
-        [sv setContentOffset:bottomOffset animated:NO];
-    }
-
-    // 2. Chờ 0.25s để GPU render khung hình hoàn tất
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
-        [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
-        UIImage *fullSnapshot = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-
-        // 3. Đưa ScrollView về lại đầu trang sau khi đã chụp ảnh xong vào RAM
-        if (sv) {
-            [sv setContentOffset:originalOffset animated:NO];
-        }
-
-        if (!fullSnapshot || !fullSnapshot.CGImage) {
-            if (completion) completion(@"--", @"0đ", @"(Lỗi chụp)", nil, nil);
-            return;
-        }
-
-        CGFloat scale = fullSnapshot.scale;
-        CGFloat cropY = mainWin.bounds.size.height * 0.35;
-        CGFloat cropH = mainWin.bounds.size.height * 0.55;
-        CGRect scaledRect = CGRectMake(0, cropY * scale, mainWin.bounds.size.width * scale, cropH * scale);
-        CGImageRef imgRef = CGImageCreateWithImageInRect(fullSnapshot.CGImage, scaledRect);
-        UIImage *croppedOrderImg = [UIImage imageWithCGImage:imgRef scale:scale orientation:fullSnapshot.imageOrientation];
-        CGImageRelease(imgRef);
-
-        VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
-            NSMutableArray<NSString *> *strings = [NSMutableArray array];
-            NSMutableArray<NSValue *> *convertedBoxes = [NSMutableArray array];
-
-            for (VNRecognizedTextObservation *obs in request.results) {
-                VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-                if (top) {
-                    [strings addObject:top.string];
-                    CGRect vBox = obs.boundingBox;
-                    CGRect uiBox = CGRectMake(vBox.origin.x, 1.0 - vBox.origin.y - vBox.size.height, vBox.size.width, vBox.size.height);
-                    [convertedBoxes addObject:[NSValue valueWithCGRect:uiBox]];
-                }
-            }
-
-            __block NSString *shipFee = @"--";
-            __block NSString *bonusFee = @"0đ";
-            __block NSString *note = @"Không có ghi chú";
-            NSMutableArray<NSString *> *shopPhones = [NSMutableArray array];
-            NSRegularExpression *moneyRegex = [NSRegularExpression regularExpressionWithPattern:@"[0-9]{1,3}(?:\\.[0-9]{3})+" options:0 error:nil];
-
-            for (NSUInteger i = 0; i < strings.count; i++) {
-                NSString *l = strings[i];
-                NSString *lower = [l lowercaseString];
-                CGRect boxI = [convertedBoxes[i] CGRectValue];
-
-                if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"] || [lower containsString:@"cơm"]) {
-                    NSArray *pList = [self extractPhonesFromText:l];
-                    for (NSString *p in pList) {
-                        if (![shopPhones containsObject:p]) [shopPhones addObject:p];
-                    }
-                }
-
-                if ([lower containsString:@"phí giao hàng"] || [lower containsString:@"giao hàng"]) {
-                    NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
-                    if (sameLineMatch) {
-                        shipFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
-                    } else {
-                        CGFloat midY_I = CGRectGetMidY(boxI);
-                        CGFloat bestDist = 999.0;
-                        NSString *bestVal = nil;
-
-                        for (NSUInteger j = 0; j < strings.count; j++) {
-                            if (i == j) continue;
-                            CGRect boxJ = [convertedBoxes[j] CGRectValue];
-                            CGFloat midY_J = CGRectGetMidY(boxJ);
-                            if (boxJ.origin.x > boxI.origin.x && fabs(midY_J - midY_I) < 0.022) {
-                                NSString *valStr = strings[j];
-                                NSTextCheckingResult *valMatch = [moneyRegex firstMatchInString:valStr options:0 range:NSMakeRange(0, valStr.length)];
-                                if (valMatch) {
-                                    CGFloat dist = fabs(midY_J - midY_I);
-                                    if (dist < bestDist) {
-                                        bestDist = dist;
-                                        bestVal = [valStr substringWithRange:valMatch.range];
-                                    }
-                                }
-                            }
-                        }
-                        if (bestVal) {
-                            shipFee = [bestVal stringByAppendingString:@"đ"];
-                        }
-                    }
-                }
-
-                if ([lower containsString:@"khích lệ"] || [lower containsString:@"khich le"]) {
-                    NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
-                    if (sameLineMatch) {
-                        bonusFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
-                    } else {
-                        CGFloat midY_I = CGRectGetMidY(boxI);
-                        CGFloat bestDist = 999.0;
-                        NSString *detectedBonus = nil;
-
-                        for (NSUInteger j = 0; j < strings.count; j++) {
-                            if (i == j) continue;
-                            CGRect boxJ = [convertedBoxes[j] CGRectValue];
-                            CGFloat midY_J = CGRectGetMidY(boxJ);
-
-                            if (boxJ.origin.x > boxI.origin.x && fabs(midY_J - midY_I) < 0.025) {
-                                NSString *valStr = [strings[j] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                                CGFloat dist = fabs(midY_J - midY_I);
-                                if (dist < bestDist) {
-                                    bestDist = dist;
-                                    detectedBonus = valStr;
-                                }
-                            }
-                        }
-
-                        if (detectedBonus) {
-                            NSString *digitsOnly = [[detectedBonus componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
-                            NSTextCheckingResult *moneyMatch = [moneyRegex firstMatchInString:detectedBonus options:0 range:NSMakeRange(0, detectedBonus.length)];
-
-                            if (moneyMatch) {
-                                bonusFee = [[detectedBonus substringWithRange:moneyMatch.range] stringByAppendingString:@"đ"];
-                            } else if (digitsOnly.length > 0 && ![digitsOnly isEqualToString:@"0"]) {
-                                bonusFee = [digitsOnly stringByAppendingString:@"đ"];
-                            } else {
-                                bonusFee = @"0đ";
-                            }
-                        }
-                    }
-                }
-
-                if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
-                    NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
-                    for (NSUInteger k = i + 1; k < strings.count; k++) {
-                        NSString *nextCandidate = strings[k];
-                        NSString *nextLower = [nextCandidate lowercaseString];
-                        if ([nextLower containsString:@"tài xế vui lòng"] || 
-                            [nextLower containsString:@"vuốt để nhận"] || 
-                            [nextLower containsString:@"tài xế được nhận"]) {
-                            break;
-                        }
-                        if (nextCandidate.length > 0) {
-                            [noteLines addObject:nextCandidate];
-                        }
-                    }
-                    if (noteLines.count > 0) {
-                        note = [noteLines componentsJoinedByString:@", "];
-                    }
-                }
-            }
-
-            NSString *secondPhone = nil;
-            if (shopPhones.count >= 2) {
-                secondPhone = shopPhones[1];
-            }
-
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (completion) completion(shipFee, bonusFee, note, secondPhone, croppedOrderImg ?: fullSnapshot);
-            });
-        }];
-
-        req.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
-        req.usesLanguageCorrection = NO;
-        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:fullSnapshot.CGImage options:@{}];
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-            [handler performRequests:@[req] error:nil];
-        });
-    });
-}
-
-@end
-
-#pragma mark - UI LỚP PHỦ NỀN CAM
-
-@interface DriverHelperVC : UIViewController
-@property (nonatomic, strong) UIView *orangeHeaderBar;
-@property (nonatomic, strong) UILabel *feeLabel;
+@interface DriverOverlayVC : UIViewController
+@property (nonatomic, strong) UIView *orangeBar;
+@property (nonatomic, strong) UILabel *infoLabel;
 @property (nonatomic, strong) UILabel *noteLabel;
-@property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
 @property (nonatomic, strong) UIButton *closeBtn;
-@property (nonatomic, strong) UIImage *orderImageToSend;
-@property (nonatomic, strong) NSString *currentPhoneForZalo;
-@property (nonatomic, assign) BOOL isShowing;
+@property (nonatomic, strong) UITextView *inspectorBox; // Bảng hiển thị thông số chạm
+@property (nonatomic, strong) NSString *currentPhone;
 
-- (void)checkAndHandleState;
-- (void)showAndExtract;
-- (void)hideHeader;
+- (void)showWithShipFee:(NSString *)ship bonus:(NSString *)bonus note:(NSString *)note phone:(NSString *)phone;
+- (void)hideOverlay;
+- (void)displayTouchInfo:(NSString *)info;
 @end
 
-static DriverHelperVC *gDriverVC = nil;
+static DriverOverlayVC *gOverlayVC = nil;
 
-@implementation DriverHelperVC
+@implementation DriverOverlayVC
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    gDriverVC = self;
+    gOverlayVC = self;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
+    CGFloat sh = [UIScreen mainScreen].bounds.size.height;
 
-    // 1. Thanh cam 96pt
-    self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
-    self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
-    self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
-    self.orangeHeaderBar.layer.shadowOpacity = 0.25;
-    self.orangeHeaderBar.layer.shadowOffset = CGSizeMake(0, 1.5);
-    self.orangeHeaderBar.layer.shadowRadius = 2.5;
-    self.orangeHeaderBar.hidden = YES;
-    [self.view addSubview:self.orangeHeaderBar];
+    // 1. Thanh Header cam 96pt (Mặc định ẩn)
+    self.orangeBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
+    self.orangeBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
+    self.orangeBar.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.orangeBar.layer.shadowOpacity = 0.25;
+    self.orangeBar.layer.shadowOffset = CGSizeMake(0, 2);
+    self.orangeBar.layer.shadowRadius = 3.0;
+    self.orangeBar.hidden = YES;
+    [self.view addSubview:self.orangeBar];
 
     // Nút Zalo
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
+    self.zaloBtn.frame = CGRectMake(sw - 72, 44, 64, 26);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
     [self.zaloBtn setTitle:@"💬 Zalo" forState:UIControlStateNormal];
     [self.zaloBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.zaloBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
-    self.zaloBtn.layer.cornerRadius = 12;
+    self.zaloBtn.titleLabel.font = [UIFont boldSystemFontOfSize:12.0];
+    self.zaloBtn.layer.cornerRadius = 13;
     self.zaloBtn.layer.borderWidth = 0.8;
     self.zaloBtn.layer.borderColor = [UIColor whiteColor].CGColor;
-    [self.zaloBtn addTarget:self action:@selector(openZaloDirectly) forControlEvents:UIControlEventTouchUpInside];
-    [self.orangeHeaderBar addSubview:self.zaloBtn];
+    [self.zaloBtn addTarget:self action:@selector(openZalo) forControlEvents:UIControlEventTouchUpInside];
+    [self.orangeBar addSubview:self.zaloBtn];
 
     // Nút Đóng (✕)
     self.closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.closeBtn.frame = CGRectMake(sw - 96, 43, 26, 24);
+    self.closeBtn.frame = CGRectMake(sw - 104, 44, 26, 26);
     [self.closeBtn setTitle:@"✕" forState:UIControlStateNormal];
     [self.closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
-    [self.closeBtn addTarget:self action:@selector(hideHeader) forControlEvents:UIControlEventTouchUpInside];
-    [self.orangeHeaderBar addSubview:self.closeBtn];
+    self.closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:15.0];
+    [self.closeBtn addTarget:self action:@selector(hideOverlay) forControlEvents:UIControlEventTouchUpInside];
+    [self.orangeBar addSubview:self.closeBtn];
 
-    // Dòng Phí Ship
-    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(65, 44, sw - 165, 22)];
-    self.feeLabel.textColor = [UIColor whiteColor];
-    self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
-    self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
-    [self.orangeHeaderBar addSubview:self.feeLabel];
+    // Dòng thông tin Phí Ship & Khích Lệ
+    self.infoLabel = [[UILabel alloc] initWithFrame:CGRectMake(65, 44, sw - 175, 22)];
+    self.infoLabel.textColor = [UIColor whiteColor];
+    self.infoLabel.font = [UIFont boldSystemFontOfSize:13.0];
+    self.infoLabel.text = @"🛵 Ship: -- | 🎁 0đ";
+    [self.orangeBar addSubview:self.infoLabel];
 
     // Dòng Ghi chú
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(65, 67, sw - 145, 26)];
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(65, 68, sw - 145, 24)];
     self.noteLabel.textColor = [UIColor yellowColor];
-    self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
-    self.noteLabel.numberOfLines = 2;
-    self.noteLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.noteLabel.text = @"📌 Đang phân tích...";
-    [self.orangeHeaderBar addSubview:self.noteLabel];
+    self.noteLabel.font = [UIFont boldSystemFontOfSize:11.0];
+    self.noteLabel.text = @"📌 Ghi chú: --";
+    [self.orangeBar addSubview:self.noteLabel];
 
-    // Nút Gọi phụ
-    self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.callSecondBtn.frame = CGRectMake(sw - 78, 68, 72, 20);
-    self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
-    [self.callSecondBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.callSecondBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10.0];
-    self.callSecondBtn.layer.cornerRadius = 4;
-    self.callSecondBtn.hidden = YES;
-    [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
-    [self.orangeHeaderBar addSubview:self.callSecondBtn];
+    // 2. BẢNG HIỂN THỊ THÔNG SỐ CHẠM (Nổi ở đáy màn hình)
+    self.inspectorBox = [[UITextView alloc] initWithFrame:CGRectMake(10, sh - 110, sw - 20, 55)];
+    self.inspectorBox.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.85];
+    self.inspectorBox.textColor = [UIColor cyanColor];
+    self.inspectorBox.font = [UIFont fontWithName:@"Courier-Bold" size:10.5] ?: [UIFont boldSystemFontOfSize:10.5];
+    self.inspectorBox.editable = NO;
+    self.inspectorBox.layer.cornerRadius = 6;
+    self.inspectorBox.layer.borderWidth = 1;
+    self.inspectorBox.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.3].CGColor;
+    self.inspectorBox.text = @"[INSPECTOR] Chạm vào đơn hàng hoặc nút Back để lấy thông số...";
+    [self.view addSubview:self.inspectorBox];
 }
 
-- (void)checkAndHandleState {
-    BOOL isDetail = [DriverDataExtractor isReactNativeOrderDetailOpen];
-    if (isDetail) {
-        if (!self.isShowing) {
-            [self showAndExtract];
-        }
+- (void)displayTouchInfo:(NSString *)info {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.inspectorBox.text = info;
+        [UIPasteboard generalPasteboard].string = info; // Tự động chép vào Clipboard
+    });
+}
+
+- (void)showWithShipFee:(NSString *)ship bonus:(NSString *)bonus note:(NSString *)note phone:(NSString *)phone {
+    self.currentPhone = phone;
+    self.infoLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@ | 🎁 Khích lệ: %@", ship ?: @"--", bonus ?: @"0đ"];
+    self.noteLabel.text = [NSString stringWithFormat:@"📌 Ghi chú: %@", note ?: @"Không có ghi chú"];
+    self.orangeBar.hidden = NO;
+}
+
+- (void)hideOverlay {
+    self.orangeBar.hidden = YES;
+}
+
+- (void)openZalo {
+    if (self.currentPhone.length >= 10) {
+        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://zalo.me/%@", self.currentPhone]];
+        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
     } else {
-        if (self.isShowing) {
-            [self hideHeader];
-        }
-    }
-}
-
-- (void)showAndExtract {
-    self.isShowing = YES;
-    self.orangeHeaderBar.hidden = NO;
-    self.orangeHeaderBar.alpha = 0.6;
-    self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
-    self.noteLabel.text = @"📌 Đang tải ghi chú...";
-
-    [DriverDataExtractor expandSheetAndExtract:^(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage) {
-        self.orangeHeaderBar.alpha = 1.0;
-        self.orderImageToSend = croppedOrderImage;
-        self.currentPhoneForZalo = randomSecondPhone;
-
-        self.feeLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@ | 🎁 Khích lệ: %@", shipFee, bonusFee];
-        self.noteLabel.text = [NSString stringWithFormat:@"📌 Ghi chú: %@", note];
-
-        if (randomSecondPhone.length > 0) {
-            self.callSecondBtn.hidden = NO;
-            self.callSecondBtn.accessibilityValue = randomSecondPhone;
-            [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [randomSecondPhone substringFromIndex:MAX(0, (int)randomSecondPhone.length - 4)]] forState:UIControlStateNormal];
-            self.noteLabel.frame = CGRectMake(65, 67, [UIScreen mainScreen].bounds.size.width - 145, 26);
-        } else {
-            self.callSecondBtn.hidden = YES;
-            self.noteLabel.frame = CGRectMake(65, 67, [UIScreen mainScreen].bounds.size.width - 70, 26);
-        }
-    }];
-}
-
-- (void)hideHeader {
-    self.isShowing = NO;
-    self.orangeHeaderBar.hidden = YES;
-}
-
-- (void)openZaloDirectly {
-    if (self.orderImageToSend) {
-        [UIPasteboard generalPasteboard].image = self.orderImageToSend;
-    }
-    NSURL *zaloURL = nil;
-    if (self.currentPhoneForZalo.length >= 10) {
-        zaloURL = [NSURL URLWithString:[NSString stringWithFormat:@"https://zalo.me/%@", self.currentPhoneForZalo]];
-    } else {
-        zaloURL = [NSURL URLWithString:@"zalo://"];
-    }
-    [[UIApplication sharedApplication] openURL:zaloURL options:@{} completionHandler:nil];
-}
-
-- (void)makeCallSecond {
-    NSString *phone = self.callSecondBtn.accessibilityValue;
-    if (phone.length > 0) {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:[NSString stringWithFormat:@"tel://%@", phone]] options:@{} completionHandler:nil];
+        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"zalo://"] options:@{} completionHandler:nil];
     }
 }
 
 @end
 
-#pragma mark - HOOK TOUCH EVENT
+#pragma mark - 2. KHU VỰC BẮT MÃ VIEW VÀ BÓC TÁCH DỮ LIỆU
+
+@interface DriverDataHandler : NSObject
++ (void)processTouchOnView:(UIView *)touchedView atPoint:(CGPoint)pt;
+@end
+
+@implementation DriverDataHandler
+
++ (void)processTouchOnView:(UIView *)touchedView atPoint:(CGPoint)pt {
+    NSString *className = NSStringFromClass([touchedView class]);
+    NSString *accLabel = touchedView.accessibilityLabel ?: @"(none)";
+    
+    // Lấy nội dung text nếu có
+    NSString *viewText = @"";
+    @try {
+        id t = [touchedView valueForKey:@"text"];
+        if ([t isKindOfClass:[NSString class]]) viewText = (NSString *)t;
+    } @catch (NSException *e) {}
+
+    // Tạo chuỗi thông tin hiển thị lên màn hình
+    NSString *info = [NSString stringWithFormat:@"Tọa độ: (X:%.0f, Y:%.0f)\nClass: %@\nAccLabel: %@ | Text: %@", 
+                      pt.x, pt.y, className, accLabel, viewText.length > 0 ? viewText : @"(none)"];
+    
+    [gOverlayVC displayTouchInfo:info];
+
+    // =========================================================================
+    // ĐIỀU KIỆN 1: BẤM VÀO NÚT BACK (GÓC TRÁI) -> ẨN THANH CAM
+    // =========================================================================
+    if (pt.x <= 85.0 && pt.y <= 105.0) {
+        [gOverlayVC hideOverlay];
+        return;
+    }
+
+    // =========================================================================
+    // ĐIỀU KIỆN 2: KHI BẠN CHẠM VÀO ĐƠN HÀNG
+    // Sau khi có Class / AccLabel từ bảng hiển thị, bạn điền vào đây:
+    // =========================================================================
+    /*
+    if ([className containsString:@"..."] || [accLabel containsString:@"..."]) {
+        [gOverlayVC showWithShipFee:@"18.000đ" bonus:@"0đ" note:@"Ghi chú mẫu" phone:@"0901234567"];
+    }
+    */
+}
+
+@end
+
+#pragma mark - 3. HOOK SỰ KIỆN TOUCH & OVERLAY WINDOW
 
 static void (*orig_sendEvent)(id, SEL, UIEvent *);
 static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
@@ -450,23 +170,13 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     if (event.type == UIEventTypeTouches) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
-                CGPoint loc = [t locationInView:nil];
-                // Chạm góc trên bên trái -> Đóng thanh cam
-                if (loc.x <= 85.0 && loc.y <= 105.0) {
-                    [gDriverVC hideHeader];
-                }
-
-                // Kiểm tra chuyển đổi màn hình sau 0.25s
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [gDriverVC checkAndHandleState];
-                });
+                CGPoint pt = [t locationInView:nil];
+                [DriverDataHandler processTouchOnView:t.view atPoint:pt];
                 break;
             }
         }
     }
 }
-
-#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (X: 0 -> 85, Y: 0 -> 105)
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -476,19 +186,19 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
+    // Đục lỗ góc trái (X: 0 -> 85, Y: 0 -> 105) để bấm Back app gốc
     if (point.x <= 85.0 && point.y <= 105.0) {
-        DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
-        [vc hideHeader];
+        [gOverlayVC hideOverlay];
         return nil;
     }
     return hitView;
 }
 @end
 
-static DriverOverlayWindow *gDriverWin = nil;
+static DriverOverlayWindow *gDriverWindow = nil;
 
 __attribute__((constructor))
-static void dylib_init(void) {
+static void dylib_start(void) {
     Class appClass = [UIApplication class];
     Method mSend = class_getInstanceMethod(appClass, @selector(sendEvent:));
     orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(mSend);
@@ -509,15 +219,15 @@ static void dylib_init(void) {
                             break;
                         }
                     }
-                    if (scene) gDriverWin = [[DriverOverlayWindow alloc] initWithWindowScene:scene];
+                    if (scene) gDriverWindow = [[DriverOverlayWindow alloc] initWithWindowScene:scene];
                 }
-                if (!gDriverWin) gDriverWin = [[DriverOverlayWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+                if (!gDriverWindow) gDriverWindow = [[DriverOverlayWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
 
-                gDriverWin.windowLevel = UIWindowLevelAlert + 1000.0;
-                gDriverWin.backgroundColor = [UIColor clearColor];
-                DriverHelperVC *vc = [[DriverHelperVC alloc] init];
-                gDriverWin.rootViewController = vc;
-                gDriverWin.hidden = NO;
+                gDriverWindow.windowLevel = UIWindowLevelAlert + 1000.0;
+                gDriverWindow.backgroundColor = [UIColor clearColor];
+                DriverOverlayVC *vc = [[DriverOverlayVC alloc] init];
+                gDriverWindow.rootViewController = vc;
+                gDriverWindow.hidden = NO;
             });
         });
     }];
