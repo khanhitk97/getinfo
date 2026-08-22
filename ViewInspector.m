@@ -87,56 +87,87 @@
 
             VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
                 NSMutableArray<NSString *> *strings = [NSMutableArray array];
+                NSMutableArray<NSValue *> *boxes = [NSMutableArray array];
+
                 for (VNRecognizedTextObservation *obs in request.results) {
                     VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-                    if (top) [strings addObject:top.string];
+                    if (top) {
+                        [strings addObject:top.string];
+                        [boxes addObject:[NSValue valueWithCGRect:obs.boundingBox]];
+                    }
                 }
 
-                NSString *shipFee = @"--";
-                NSString *bonusFee = @"0đ";
-                NSString *note = @"Không có ghi chú";
+                __block NSString *shipFee = @"--";
+                __block NSString *bonusFee = @"0đ";
+                __block NSString *note = @"Không có ghi chú";
                 NSMutableArray<NSString *> *shopPhones = [NSMutableArray array];
-                NSRegularExpression *moneyRegex = [NSRegularExpression regularExpressionWithPattern:@"[0-9]{1,3}(?:\\.[0-9]{3})+" options:0 error:nil];
 
                 for (NSUInteger i = 0; i < strings.count; i++) {
                     NSString *l = strings[i];
                     NSString *lower = [l lowercaseString];
+                    CGRect boxI = [boxes[i] CGRectValue];
 
-                    if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"quán"] || [lower containsString:@"sâm"] || [lower containsString:@"bún"] || [lower containsString:@"cơm"]) {
+                    // 1. Quét SĐT ở mục "Mua hàng tại"
+                    if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"]) {
                         NSArray *pList = [self extractPhonesFromText:l];
                         for (NSString *p in pList) {
                             if (![shopPhones containsObject:p]) [shopPhones addObject:p];
                         }
                     }
 
-                    if ([lower containsString:@"phí giao hàng"] || [lower containsString:@"giao hàng"]) {
-                        NSTextCheckingResult *match = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
-                        if (match) {
-                            shipFee = [[l substringWithRange:match.range] stringByAppendingString:@"đ"];
-                        } else if (i + 1 < strings.count) {
-                            NSString *next = strings[i+1];
-                            NSTextCheckingResult *nextMatch = [moneyRegex firstMatchInString:next options:0 range:NSMakeRange(0, next.length)];
-                            if (nextMatch) {
-                                shipFee = [[next substringWithRange:nextMatch.range] stringByAppendingString:@"đ"];
-                            } else {
-                                NSString *digits = [[next componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
-                                if (digits.length >= 4) shipFee = [digits stringByAppendingString:@"đ"];
+                    // 2. Bóc tách Phí giao hàng theo Bounding Box (Cùng hàng Y, nằm bên phải)
+                    if ([lower containsString:@"phí giao hàng"]) {
+                        // Kiểm tra nếu số tiền nằm dính chung dòng
+                        NSRegularExpression *moneyRegex = [NSRegularExpression regularExpressionWithPattern:@"[0-9]{1,3}(?:\\.[0-9]{3})+" options:0 error:nil];
+                        NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
+                        if (sameLineMatch) {
+                            shipFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
+                        } else {
+                            // Tìm khối text nằm cùng cao độ Y và ở bên phải
+                            for (NSUInteger j = 0; j < strings.count; j++) {
+                                if (i == j) continue;
+                                CGRect boxJ = [boxes[j] CGRectValue];
+                                if (fabs(boxJ.origin.y - boxI.origin.y) < 0.035 && boxJ.origin.x > boxI.origin.x) {
+                                    NSString *valStr = strings[j];
+                                    NSTextCheckingResult *valMatch = [moneyRegex firstMatchInString:valStr options:0 range:NSMakeRange(0, valStr.length)];
+                                    if (valMatch) {
+                                        shipFee = [[valStr substringWithRange:valMatch.range] stringByAppendingString:@"đ"];
+                                    } else {
+                                        NSString *digits = [[valStr componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
+                                        if (digits.length >= 3) shipFee = [digits stringByAppendingString:@"đ"];
+                                    }
+                                    break;
+                                }
                             }
                         }
                     }
 
+                    // 3. Bóc tách Phí khích lệ tài xế theo Bounding Box
                     if ([lower containsString:@"khích lệ"]) {
-                        if (i + 1 < strings.count) {
-                            NSString *next = strings[i+1];
-                            NSTextCheckingResult *bonusMatch = [moneyRegex firstMatchInString:next options:0 range:NSMakeRange(0, next.length)];
-                            if (bonusMatch) {
-                                bonusFee = [[next substringWithRange:bonusMatch.range] stringByAppendingString:@"đ"];
-                            } else if ([next containsString:@"0"]) {
-                                bonusFee = @"0đ";
+                        NSRegularExpression *moneyRegex = [NSRegularExpression regularExpressionWithPattern:@"[0-9]{1,3}(?:\\.[0-9]{3})+" options:0 error:nil];
+                        NSTextCheckingResult *sameLineMatch = [moneyRegex firstMatchInString:l options:0 range:NSMakeRange(0, l.length)];
+                        if (sameLineMatch) {
+                            bonusFee = [[l substringWithRange:sameLineMatch.range] stringByAppendingString:@"đ"];
+                        } else {
+                            for (NSUInteger j = 0; j < strings.count; j++) {
+                                if (i == j) continue;
+                                CGRect boxJ = [boxes[j] CGRectValue];
+                                if (fabs(boxJ.origin.y - boxI.origin.y) < 0.035 && boxJ.origin.x > boxI.origin.x) {
+                                    NSString *valStr = strings[j];
+                                    if ([valStr isEqualToString:@"0"] || [valStr containsString:@"0"]) {
+                                        bonusFee = @"0đ";
+                                    } else {
+                                        NSTextCheckingResult *valMatch = [moneyRegex firstMatchInString:valStr options:0 range:NSMakeRange(0, valStr.length)];
+                                        if (valMatch) bonusFee = [[valStr substringWithRange:valMatch.range] stringByAppendingString:@"đ"];
+                                        else bonusFee = [valStr stringByAppendingString:@"đ"];
+                                    }
+                                    break;
+                                }
                             }
                         }
                     }
 
+                    // 4. Bóc tách Ghi chú
                     if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
                         if (i + 1 < strings.count) {
                             NSString *nextStr = strings[i+1];
@@ -169,7 +200,7 @@
 
 @end
 
-#pragma mark - UI SÁT MÉP TRÊN (CHIỀU CAO 90pt, ÉP SÁT ĐỈNH)
+#pragma mark - UI SÁT MÉP TRÊN CÙNG (CHIỀU CAO 92pt)
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIButton *bubbleBtn;
@@ -190,7 +221,7 @@
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // 1. Nút bong bóng nhỏ ở góc phải (nằm ở Y = 150)
+    // 1. Bong bóng nhỏ ở góc phải (Y = 150)
     self.bubbleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.bubbleBtn.frame = CGRectMake(sw - 54, 150, 46, 46);
     self.bubbleBtn.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:0.98];
@@ -204,7 +235,7 @@
     [self.bubbleBtn addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPanBubble:)]];
     [self.view addSubview:self.bubbleBtn];
 
-    // 2. LỚP PHỦ NỀN CAM RÚT XUỐNG 90pt (VỪA KHÍT HEADER GỐC CỦA APP)
+    // 2. Lớp phủ nền cam rút gọn cao 92pt
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 92)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -214,8 +245,7 @@
     self.orangeHeaderBar.hidden = YES;
     [self.view addSubview:self.orangeHeaderBar];
 
-    // Hàng 1 (Y = 44): Ngay dưới tai thỏ, ngang hàng nút Trở về (<)
-    // Nút Zalo sát mép phải
+    // Hàng 1 (Y = 44): Nút Zalo bên phải
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
     self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
@@ -237,21 +267,21 @@
     [self.closeBtn addTarget:self action:@selector(closeOrangeHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.closeBtn];
 
-    // Dòng Phí Ship & Khích Lệ (Y = 44, đè ngay chính giữa tên quán cũ)
+    // Dòng Phí Ship & Khích Lệ (Y = 44, căn lề trái từ X = 46)
     self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 44, sw - 142, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
     self.feeLabel.text = @"🛵 Ship: -- | 🎁 Khích lệ: 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
-    // Hàng 2 (Y = 68): Ghi chú & Nút Gọi phụ nằm sát bên dưới
+    // Hàng 2 (Y = 68): Ghi chú & Nút Gọi phụ
     self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 68, sw - 128, 18)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:11.0];
     self.noteLabel.text = @"📌 Ghi chú: Không có ghi chú";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
-    // Nút Gọi phụ (nếu có 2 SĐT)
+    // Nút Gọi phụ
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.callSecondBtn.frame = CGRectMake(sw - 78, 67, 72, 20);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
@@ -334,7 +364,7 @@
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Đục lỗ góc trái (X: 0 -> 45, Y: 0 -> 75) để bấm xuyên vào nút Trở về (<)
+    // Đục lỗ góc trái (X: 0 -> 45, Y: 0 -> 75)
     if (point.x <= 45.0 && point.y <= 75.0) {
         return nil;
     }
