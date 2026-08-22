@@ -28,7 +28,6 @@
     return mainWin;
 }
 
-// Kiểm tra xem màn hình hiện tại có từ khóa của màn hình đơn hàng hay không
 + (BOOL)scanForOrderKeywordsInView:(UIView *)v {
     if (!v || v.hidden || v.alpha < 0.05) return NO;
 
@@ -196,7 +195,7 @@
 
 @end
 
-#pragma mark - 2. GIAO DIỆN THANH OVERLAY (ĐỔI MÀU THEO TIỀN KHÍCH LỆ)
+#pragma mark - 2. GIAO DIỆN THANH OVERLAY
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeBar;
@@ -205,8 +204,6 @@
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
-@property (nonatomic, strong) UIButton *closeBtn;
-@property (nonatomic, strong) NSString *currentPhoneForZalo;
 @property (nonatomic, assign) BOOL isShowing;
 
 - (void)showAndExtract;
@@ -224,7 +221,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // 1. Thanh Top Bar 96pt (Mặc định màu cam)
+    // 1. Thanh Top Bar 96pt
     self.orangeBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -235,7 +232,7 @@ static DriverHelperVC *gDriverVC = nil;
     [self.view addSubview:self.orangeBar];
 
     // 2. Biểu tượng Back trực quan (‹)
-    self.backIconLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 40, 36, 44)];
+    self.backIconLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 39, 36, 44)];
     self.backIconLabel.text = @"‹";
     self.backIconLabel.textColor = [UIColor whiteColor];
     self.backIconLabel.font = [UIFont systemFontOfSize:42.0 weight:UIFontWeightMedium];
@@ -243,37 +240,28 @@ static DriverHelperVC *gDriverVC = nil;
     self.backIconLabel.userInteractionEnabled = NO;
     [self.orangeBar addSubview:self.backIconLabel];
 
-    // Nút Zalo
+    // 3. Nút Zalo (Ngang hàng với nút Back: Y = 44, H = 34)
     self.zaloBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.zaloBtn.frame = CGRectMake(sw - 68, 43, 62, 24);
-    self.zaloBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.25];
+    self.zaloBtn.frame = CGRectMake(sw - 80, 44, 72, 34);
+    self.zaloBtn.backgroundColor = [UIColor colorWithRed:0.0 green:0.41 blue:1.0 alpha:0.9]; // Màu xanh Zalo
     [self.zaloBtn setTitle:@"💬 Zalo" forState:UIControlStateNormal];
     [self.zaloBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.zaloBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
-    self.zaloBtn.layer.cornerRadius = 12;
-    self.zaloBtn.layer.borderWidth = 0.8;
-    self.zaloBtn.layer.borderColor = [UIColor whiteColor].CGColor;
-    [self.zaloBtn addTarget:self action:@selector(openZalo) forControlEvents:UIControlEventTouchUpInside];
+    self.zaloBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13.0];
+    self.zaloBtn.layer.cornerRadius = 8;
+    self.zaloBtn.layer.borderWidth = 1.0;
+    self.zaloBtn.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.6].CGColor;
+    [self.zaloBtn addTarget:self action:@selector(captureAndShareZalo) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeBar addSubview:self.zaloBtn];
 
-    // Nút Đóng (✕)
-    self.closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.closeBtn.frame = CGRectMake(sw - 96, 43, 26, 24);
-    [self.closeBtn setTitle:@"✕" forState:UIControlStateNormal];
-    [self.closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14.0];
-    [self.closeBtn addTarget:self action:@selector(hideHeader) forControlEvents:UIControlEventTouchUpInside];
-    [self.orangeBar addSubview:self.closeBtn];
-
-    // Dòng Phí Ship & Khích Lệ
-    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 44, sw - 150, 22)];
+    // Dòng Phí Ship & Khích Lệ (X = 50 -> trước nút Zalo)
+    self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 44, sw - 136, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
     self.feeLabel.text = @"🛵 Ship: Đang đọc... | 🎁 --";
     [self.orangeBar addSubview:self.feeLabel];
 
     // Dòng Ghi Chú
-    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 67, sw - 130, 26)];
+    self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 67, sw - 136, 26)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.noteLabel.numberOfLines = 2;
@@ -281,12 +269,12 @@ static DriverHelperVC *gDriverVC = nil;
     self.noteLabel.text = @"📌 Đang đọc ghi chú...";
     [self.orangeBar addSubview:self.noteLabel];
 
-    // Nút Gọi Phụ
+    // Nút Gọi Phụ (Nếu có số phụ)
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.callSecondBtn.frame = CGRectMake(sw - 78, 68, 72, 20);
+    self.callSecondBtn.frame = CGRectMake(sw - 80, 10, 72, 24);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
     [self.callSecondBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    self.callSecondBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10.0];
+    self.callSecondBtn.titleLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.callSecondBtn.layer.cornerRadius = 4;
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
@@ -311,32 +299,25 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeBar.hidden = NO;
 
     [DriverDataExtractor extractDataDirectlyFromRAM:^(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *secondPhone) {
-        self.currentPhoneForZalo = secondPhone;
         self.feeLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@ | 🎁 Khích lệ: %@", shipFee, bonusFee];
         self.noteLabel.text = [NSString stringWithFormat:@"📌 Ghi chú: %@", note];
 
-        // =========================================================================
-        // KIỂM TRA ĐIỀU KIỆN ĐỔI MÀU THANH OVERLAY
-        // =========================================================================
+        // Kiểm tra tiền khích lệ >= 10.000đ để đổi màu
         NSString *digitsBonus = [[bonusFee componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
         long long bonusValue = [digitsBonus longLongValue];
 
         if (bonusValue >= 10000) {
-            // Khích lệ >= 10.000đ: Chuyển thanh sang màu Xanh Lá Nổi Bật
-            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:1.0];
+            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:1.0]; // Xanh lá
         } else {
-            // Khích lệ < 10.000đ: Giữ màu Cam mặc định
-            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
+            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0]; // Cam
         }
 
         if (secondPhone.length > 0) {
             self.callSecondBtn.hidden = NO;
             self.callSecondBtn.accessibilityValue = secondPhone;
             [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [secondPhone substringFromIndex:MAX(0, (int)secondPhone.length - 4)]] forState:UIControlStateNormal];
-            self.noteLabel.frame = CGRectMake(50, 67, [UIScreen mainScreen].bounds.size.width - 130, 26);
         } else {
             self.callSecondBtn.hidden = YES;
-            self.noteLabel.frame = CGRectMake(50, 67, [UIScreen mainScreen].bounds.size.width - 56, 26);
         }
     }];
 }
@@ -346,13 +327,35 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeBar.hidden = YES;
 }
 
-- (void)openZalo {
-    if (self.currentPhoneForZalo.length >= 10) {
-        NSURL *zaloURL = [NSURL URLWithString:[NSString stringWithFormat:@"https://zalo.me/%@", self.currentPhoneForZalo]];
-        [[UIApplication sharedApplication] openURL:zaloURL options:@{} completionHandler:nil];
-    } else {
-        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"zalo://"] options:@{} completionHandler:nil];
-    }
+// Chụp toàn bộ màn hình đơn gốc và mở bảng chia sẻ
+- (void)captureAndShareZalo {
+    UIWindow *mainWin = [DriverDataExtractor getMainAppWindow];
+    if (!mainWin) return;
+
+    // 1. Tạm ẩn thanh overlay để ảnh chụp sạch
+    self.orangeBar.hidden = YES;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
+        [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
+        UIImage *screenshot = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+
+        // 2. Hiện lại thanh overlay
+        self.orangeBar.hidden = NO;
+
+        if (!screenshot) return;
+
+        // 3. Mở Share Sheet mặc định của iOS
+        UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:@[screenshot] applicationActivities:nil];
+        
+        if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+            activityVC.popoverPresentationController.sourceView = self.zaloBtn;
+            activityVC.popoverPresentationController.sourceRect = self.zaloBtn.bounds;
+        }
+
+        [self presentViewController:activityVC animated:YES completion:nil];
+    });
 }
 
 - (void)makeCallSecond {
@@ -391,7 +394,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
                     break;
                 }
 
-                // 3. Với các cú chạm khác (mở đơn, lướt), đợi 0.3s rồi đồng bộ UI
+                // 3. Các cú chạm khác -> Tự động đồng bộ UI sau 0.3s
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC syncUIState];
                 });
@@ -410,7 +413,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
 
-    // Vùng nút Back góc trên bên trái (X <= 75, Y <= 100): Ẩn thanh cam và xuyên chạm 100% xuống app gốc
+    // Vùng nút Back góc trên bên trái: Ẩn thanh cam và xuyên chạm 100% xuống app gốc
     if (point.x <= 75.0 && point.y <= 100.0) {
         [vc hideHeader];
         return nil; 
@@ -418,8 +421,8 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
 
     UIView *hitView = [super hitTest:point withEvent:event];
 
-    // Bắt chạm trên các nút tính năng (Zalo, Gọi phụ, Đóng)
-    if (hitView == vc.zaloBtn || hitView == vc.closeBtn || hitView == vc.callSecondBtn) {
+    // Bắt chạm trên nút Zalo và Gọi phụ
+    if (hitView == vc.zaloBtn || hitView == vc.callSecondBtn) {
         return hitView;
     }
     
