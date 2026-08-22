@@ -6,7 +6,7 @@
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
-+ (void)quickCheckOrderDetailScreen:(void(^)(BOOL isDetail))completion;
++ (BOOL)isOrderDetailPresent;
 @end
 
 @implementation DriverDataExtractor
@@ -69,49 +69,24 @@
     return mainWin;
 }
 
-// Kiểm tra nhanh màn hình chi tiết đơn qua OCR snapshot cực nhẹ (Fast Recognition)
-+ (void)quickCheckOrderDetailScreen:(void(^)(BOOL isDetail))completion {
-    UIWindow *mainWin = [self getMainAppWindow];
-    if (!mainWin) {
-        if (completion) completion(NO);
-        return;
-    }
-
-    UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
-    [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:NO];
-    UIImage *snap = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-
-    if (!snap || !snap.CGImage) {
-        if (completion) completion(NO);
-        return;
-    }
-
-    VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
-        BOOL found = NO;
-        for (VNRecognizedTextObservation *obs in request.results) {
-            VNRecognizedText *top = [[obs topCandidates:1] firstObject];
-            if (top) {
-                NSString *lower = [top.string lowercaseString];
-                if ([lower containsString:@"mua hàng tại"] || 
-                    [lower containsString:@"giao đến địa chỉ"] || 
-                    [lower containsString:@"chi tiết đơn hàng"] ||
-                    [lower containsString:@"vuốt để nhận"]) {
-                    found = YES;
-                    break;
-                }
-            }
+// Duyệt cây View tìm trực tiếp các thành phần đặc trưng của màn hình chi tiết đơn
++ (BOOL)findDetailKeywordsInView:(UIView *)v {
+    if (!v) return NO;
+    if ([v isKindOfClass:[UILabel class]]) {
+        NSString *t = [(UILabel *)v text].lowercaseString;
+        if ([t containsString:@"mua hàng tại"] || [t containsString:@"giao đến địa chỉ"] || [t containsString:@"chi tiết đơn hàng"]) {
+            return YES;
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(found);
-        });
-    }];
+    }
+    for (UIView *sub in v.subviews) {
+        if ([self findDetailKeywordsInView:sub]) return YES;
+    }
+    return NO;
+}
 
-    req.recognitionLevel = VNRequestTextRecognitionLevelFast; // Quét tốc độ cao trong vài mili-giây
-    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:snap.CGImage options:@{}];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        [handler performRequests:@[req] error:nil];
-    });
++ (BOOL)isOrderDetailPresent {
+    UIWindow *w = [self getMainAppWindow];
+    return [self findDetailKeywordsInView:w];
 }
 
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
@@ -223,7 +198,7 @@
                     }
                 }
 
-                // 4. Bóc tách Ghi chú
+                // 4. Bóc tách Ghi chú (Gom nhiều dòng)
                 if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
                     NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
                     for (NSUInteger k = i + 1; k < strings.count; k++) {
@@ -275,9 +250,12 @@
 @property (nonatomic, strong) UIButton *zaloBtn;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
-@property (nonatomic, assign) BOOL isProcessing;
+@property (nonatomic, assign) BOOL isShowing;
+@property (nonatomic, strong) NSTimer *pollTimer;
 
-- (void)handleScreenStateCheck;
+- (void)startAutoMonitor;
+- (void)triggerExtraction;
+- (void)hideHeader;
 @end
 
 static DriverHelperVC *gDriverVC = nil;
@@ -290,7 +268,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // Lớp phủ nền cam 96pt (Mặc định ẩn hoàn toàn)
+    // Lớp phủ nền cam 96pt (Mặc định ẩn)
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeHeaderBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeHeaderBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -326,7 +304,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.noteLabel.numberOfLines = 2;
     self.noteLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.noteLabel.text = @"📌 Đang phân tích...";
+    self.noteLabel.text = @"📌 Đang phân tích đơn hàng...";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
     // Nút Gọi phụ (khi 2 SĐT)
@@ -339,46 +317,59 @@ static DriverHelperVC *gDriverVC = nil;
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
+
+    [self startAutoMonitor];
 }
 
-- (void)handleScreenStateCheck {
-    if (self.isProcessing) return;
-    
-    [DriverDataExtractor quickCheckOrderDetailScreen:^(BOOL isDetail) {
-        if (isDetail) {
-            if (self.orangeHeaderBar.hidden) {
-                self.isProcessing = YES;
-                self.orangeHeaderBar.hidden = NO;
-                self.orangeHeaderBar.alpha = 0.6;
-                self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
-                self.noteLabel.text = @"📌 Đang tải ghi chú...";
+// Polling kiểm tra trạng thái màn hình mỗi 0.4s (Cực kỳ nhẹ CPU, không tốn pin)
+- (void)startAutoMonitor {
+    self.pollTimer = [NSTimer scheduledTimerWithTimeInterval:0.4 target:self selector:@selector(checkScreenState) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:NSRunLoopCommonModes];
+}
 
-                [DriverDataExtractor expandSheetAndExtract:^(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage) {
-                    self.orangeHeaderBar.alpha = 1.0;
-                    self.orderImageToSend = croppedOrderImage;
-                    self.currentPhoneForZalo = randomSecondPhone;
+- (void)checkScreenState {
+    BOOL isDetail = [DriverDataExtractor isOrderDetailPresent];
+    if (isDetail) {
+        if (!self.isShowing) {
+            [self triggerExtraction];
+        }
+    } else {
+        if (self.isShowing) {
+            [self hideHeader];
+        }
+    }
+}
 
-                    self.feeLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@ | 🎁 Khích lệ: %@", shipFee, bonusFee];
-                    self.noteLabel.text = [NSString stringWithFormat:@"📌 Ghi chú: %@", note];
+- (void)triggerExtraction {
+    self.isShowing = YES;
+    self.orangeHeaderBar.hidden = NO;
+    self.orangeHeaderBar.alpha = 0.6;
+    self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
+    self.noteLabel.text = @"📌 Đang tải ghi chú...";
 
-                    if (randomSecondPhone.length > 0) {
-                        self.callSecondBtn.hidden = NO;
-                        self.callSecondBtn.accessibilityValue = randomSecondPhone;
-                        [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [randomSecondPhone substringFromIndex:MAX(0, (int)randomSecondPhone.length - 4)]] forState:UIControlStateNormal];
-                        self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 128, 26);
-                    } else {
-                        self.callSecondBtn.hidden = YES;
-                        self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 56, 26);
-                    }
-                    self.isProcessing = NO;
-                }];
-            }
+    [DriverDataExtractor expandSheetAndExtract:^(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage) {
+        self.orangeHeaderBar.alpha = 1.0;
+        self.orderImageToSend = croppedOrderImage;
+        self.currentPhoneForZalo = randomSecondPhone;
+
+        self.feeLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@ | 🎁 Khích lệ: %@", shipFee, bonusFee];
+        self.noteLabel.text = [NSString stringWithFormat:@"📌 Ghi chú: %@", note];
+
+        if (randomSecondPhone.length > 0) {
+            self.callSecondBtn.hidden = NO;
+            self.callSecondBtn.accessibilityValue = randomSecondPhone;
+            [self.callSecondBtn setTitle:[NSString stringWithFormat:@"📞 %@", [randomSecondPhone substringFromIndex:MAX(0, (int)randomSecondPhone.length - 4)]] forState:UIControlStateNormal];
+            self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 128, 26);
         } else {
-            if (!self.orangeHeaderBar.hidden) {
-                self.orangeHeaderBar.hidden = YES;
-            }
+            self.callSecondBtn.hidden = YES;
+            self.noteLabel.frame = CGRectMake(46, 67, [UIScreen mainScreen].bounds.size.width - 56, 26);
         }
     }];
+}
+
+- (void)hideHeader {
+    self.isShowing = NO;
+    self.orangeHeaderBar.hidden = YES;
 }
 
 - (void)openZaloDirectly {
@@ -403,27 +394,7 @@ static DriverHelperVC *gDriverVC = nil;
 
 @end
 
-#pragma mark - HOOK TOUCH EVENT TOÀN CỤC (UIApplication sendEvent:)
-
-static void (*orig_sendEvent)(id, SEL, UIEvent *);
-
-static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
-    orig_sendEvent(self, _cmd, event);
-
-    if (event.type == UIEventTypeTouches) {
-        for (UITouch *touch in event.allTouches) {
-            if (touch.phase == UITouchPhaseEnded) {
-                // Sau khi người dùng chạm nhấc tay lên 0.35s -> kiểm tra trạng thái màn hình ngay
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [gDriverVC handleScreenStateCheck];
-                });
-                break;
-            }
-        }
-    }
-}
-
-#pragma mark - ENTRY POINT & HIT-TEST
+#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -445,14 +416,6 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
-    // 1. Hook UIApplication sendEvent:
-    Class appClass = [UIApplication class];
-    SEL sel = @selector(sendEvent:);
-    Method m = class_getInstanceMethod(appClass, sel);
-    orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(m);
-    method_setImplementation(m, (IMP)custom_sendEvent);
-
-    // 2. Khởi tạo Overlay Window
     [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
