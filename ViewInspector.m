@@ -196,11 +196,11 @@
 
 @end
 
-#pragma mark - 2. GIAO DIỆN THANH OVERLAY
+#pragma mark - 2. GIAO DIỆN THANH OVERLAY (ĐỔI MÀU THEO TIỀN KHÍCH LỆ)
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeBar;
-@property (nonatomic, strong) UILabel *backIconLabel; // Nhãn biểu tượng nút Back (chỉ hiển thị, không bắt chạm)
+@property (nonatomic, strong) UILabel *backIconLabel;
 @property (nonatomic, strong) UILabel *feeLabel;
 @property (nonatomic, strong) UILabel *noteLabel;
 @property (nonatomic, strong) UIButton *callSecondBtn;
@@ -224,7 +224,7 @@ static DriverHelperVC *gDriverVC = nil;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
-    // 1. Thanh cam 96pt
+    // 1. Thanh Top Bar 96pt (Mặc định màu cam)
     self.orangeBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
     self.orangeBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
     self.orangeBar.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -234,13 +234,13 @@ static DriverHelperVC *gDriverVC = nil;
     self.orangeBar.hidden = YES;
     [self.view addSubview:self.orangeBar];
 
-    // 2. BIỂU TƯỢNG NÚT BACK (Chỉ vẽ lên để định vị vị trí bấm, xuyên chạm 100%)
+    // 2. Biểu tượng Back trực quan (‹)
     self.backIconLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 40, 36, 44)];
     self.backIconLabel.text = @"‹";
     self.backIconLabel.textColor = [UIColor whiteColor];
     self.backIconLabel.font = [UIFont systemFontOfSize:42.0 weight:UIFontWeightMedium];
     self.backIconLabel.textAlignment = NSTextAlignmentCenter;
-    self.backIconLabel.userInteractionEnabled = NO; // Tắt bắt chạm để sự kiện xuyên qua
+    self.backIconLabel.userInteractionEnabled = NO;
     [self.orangeBar addSubview:self.backIconLabel];
 
     // Nút Zalo
@@ -265,7 +265,7 @@ static DriverHelperVC *gDriverVC = nil;
     [self.closeBtn addTarget:self action:@selector(hideHeader) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeBar addSubview:self.closeBtn];
 
-    // Dòng Phí Ship & Khích Lệ (Bắt đầu từ X = 50 sau nút Back)
+    // Dòng Phí Ship & Khích Lệ
     self.feeLabel = [[UILabel alloc] initWithFrame:CGRectMake(50, 44, sw - 150, 22)];
     self.feeLabel.textColor = [UIColor whiteColor];
     self.feeLabel.font = [UIFont boldSystemFontOfSize:12.5];
@@ -314,6 +314,20 @@ static DriverHelperVC *gDriverVC = nil;
         self.currentPhoneForZalo = secondPhone;
         self.feeLabel.text = [NSString stringWithFormat:@"🛵 Ship: %@ | 🎁 Khích lệ: %@", shipFee, bonusFee];
         self.noteLabel.text = [NSString stringWithFormat:@"📌 Ghi chú: %@", note];
+
+        // =========================================================================
+        // KIỂM TRA ĐIỀU KIỆN ĐỔI MÀU THANH OVERLAY
+        // =========================================================================
+        NSString *digitsBonus = [[bonusFee componentsSeparatedByCharactersInSet:[[NSCharacterSet decimalDigitCharacterSet] invertedSet]] componentsJoinedByString:@""];
+        long long bonusValue = [digitsBonus longLongValue];
+
+        if (bonusValue >= 10000) {
+            // Khích lệ >= 10.000đ: Chuyển thanh sang màu Xanh Lá Nổi Bật
+            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.18 green:0.80 blue:0.44 alpha:1.0];
+        } else {
+            // Khích lệ < 10.000đ: Giữ màu Cam mặc định
+            self.orangeBar.backgroundColor = [UIColor colorWithRed:0.96 green:0.35 blue:0.15 alpha:1.0];
+        }
 
         if (secondPhone.length > 0) {
             self.callSecondBtn.hidden = NO;
@@ -387,7 +401,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     }
 }
 
-#pragma mark - 4. OVERLAY WINDOW HIT TEST (XUYÊN CHẠM 100% NÚT BACK)
+#pragma mark - 4. OVERLAY WINDOW HIT TEST
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -396,7 +410,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
 
-    // 1. Vùng nút Back góc trên bên trái (X <= 75, Y <= 100): Ẩn thanh cam và xuyên chạm 100% xuống app gốc
+    // Vùng nút Back góc trên bên trái (X <= 75, Y <= 100): Ẩn thanh cam và xuyên chạm 100% xuống app gốc
     if (point.x <= 75.0 && point.y <= 100.0) {
         [vc hideHeader];
         return nil; 
@@ -404,12 +418,12 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
 
     UIView *hitView = [super hitTest:point withEvent:event];
 
-    // 2. Chỉ bắt chạm trên các nút tính năng (Zalo, Gọi phụ, Đóng)
+    // Bắt chạm trên các nút tính năng (Zalo, Gọi phụ, Đóng)
     if (hitView == vc.zaloBtn || hitView == vc.closeBtn || hitView == vc.callSecondBtn) {
         return hitView;
     }
     
-    // 3. Mọi điểm khác (kể cả icon biểu tượng Back hay nền thanh cam) đều xuyên chạm thẳng xuống app gốc
+    // Mọi điểm khác xuyên chạm thẳng xuống app gốc
     if (hitView == self.rootViewController.view || hitView == vc.orangeBar || hitView == vc.feeLabel || hitView == vc.noteLabel || hitView == vc.backIconLabel) {
         return nil; 
     }
