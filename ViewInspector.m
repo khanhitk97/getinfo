@@ -103,31 +103,30 @@
     return [self findReactNativeKeywordInView:win];
 }
 
-// THỰC HIỆN CUỘN XUỐNG ĐÁY LẤY ẢNH -> TRẢ VỀ ĐẦU TRANG NGAY
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
     UIWindow *mainWin = [self getMainAppWindow];
     if (!mainWin) {
-        if (completion) completion(@"--", @"0đ", @"(Lỗi)", nil, nil);
+        if (completion) completion(@"--", @"0đ", @"(Lỗi cửa sổ)", nil, nil);
         return;
     }
 
     UIScrollView *sv = [self findMainScrollView:mainWin];
     __block CGPoint originalOffset = sv ? sv.contentOffset : CGPointZero;
 
-    // 1. Nhảy nhanh xuống đáy để React Native nạp dữ liệu bên dưới
+    // 1. Nhảy xuống đáy để React Native nạp dữ liệu
     if (sv && sv.contentSize.height > sv.bounds.size.height) {
         CGPoint bottomOffset = CGPointMake(0, sv.contentSize.height - sv.bounds.size.height + sv.adjustedContentInset.bottom);
         [sv setContentOffset:bottomOffset animated:NO];
     }
 
-    // 2. Chờ 0.06s để khung render xong -> Chụp ảnh -> Đưa về lại vị trí cũ ngay
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.06 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 2. Chờ 0.25s để GPU render khung hình hoàn tất
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIGraphicsBeginImageContextWithOptions(mainWin.bounds.size, NO, 0.0);
         [mainWin drawViewHierarchyInRect:mainWin.bounds afterScreenUpdates:YES];
         UIImage *fullSnapshot = UIGraphicsGetImageFromCurrentImageContext();
         UIGraphicsEndImageContext();
 
-        // Trả vị trí cuộn về lại ban đầu
+        // 3. Đưa ScrollView về lại đầu trang sau khi đã chụp ảnh xong vào RAM
         if (sv) {
             [sv setContentOffset:originalOffset animated:NO];
         }
@@ -288,7 +287,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ VÀ ADVANCED HUD LOGGER
+#pragma mark - UI LỚP PHỦ NỀN CAM
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -297,7 +296,6 @@
 @property (nonatomic, strong) UIButton *callSecondBtn;
 @property (nonatomic, strong) UIButton *zaloBtn;
 @property (nonatomic, strong) UIButton *closeBtn;
-@property (nonatomic, strong) UITextView *hudTextView;
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
 @property (nonatomic, assign) BOOL isShowing;
@@ -305,7 +303,6 @@
 - (void)checkAndHandleState;
 - (void)showAndExtract;
 - (void)hideHeader;
-- (void)appendLog:(NSString *)text;
 @end
 
 static DriverHelperVC *gDriverVC = nil;
@@ -317,7 +314,6 @@ static DriverHelperVC *gDriverVC = nil;
     gDriverVC = self;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
-    CGFloat sh = [UIScreen mainScreen].bounds.size.height;
 
     // 1. Thanh cam 96pt
     self.orangeHeaderBar = [[UIView alloc] initWithFrame:CGRectMake(0, 0, sw, 96)];
@@ -377,31 +373,6 @@ static DriverHelperVC *gDriverVC = nil;
     self.callSecondBtn.hidden = YES;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
-
-    // 2. HUD CONSOLE
-    self.hudTextView = [[UITextView alloc] initWithFrame:CGRectMake(10, sh - 115, sw - 20, 48)];
-    self.hudTextView.backgroundColor = [UIColor colorWithRed:0 green:0 blue:0 alpha:0.85];
-    self.hudTextView.textColor = [UIColor cyanColor];
-    self.hudTextView.font = [UIFont fontWithName:@"Courier" size:10.0] ?: [UIFont systemFontOfSize:10.0];
-    self.hudTextView.editable = NO;
-    self.hudTextView.layer.cornerRadius = 6;
-    self.hudTextView.layer.borderWidth = 1;
-    self.hudTextView.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.3].CGColor;
-    self.hudTextView.text = @"[SNIFFER READY] Bấm nút < để bắt sự kiện...";
-    [self.view addSubview:self.hudTextView];
-}
-
-- (void)appendLog:(NSString *)text {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSString *newText = [NSString stringWithFormat:@"%@\n> %@", self.hudTextView.text, text];
-        NSArray *lines = [newText componentsSeparatedByString:@"\n"];
-        if (lines.count > 4) {
-            lines = [lines subarrayWithRange:NSMakeRange(lines.count - 4, 4)];
-            newText = [lines componentsJoinedByString:@"\n"];
-        }
-        self.hudTextView.text = newText;
-        [UIPasteboard generalPasteboard].string = text;
-    });
 }
 
 - (void)checkAndHandleState {
@@ -471,33 +442,7 @@ static DriverHelperVC *gDriverVC = nil;
 
 @end
 
-#pragma mark - DEEP EVENT HOOKING & SNIFFER
-
-static BOOL (*orig_sendAction)(id, SEL, SEL, id, id, UIEvent *);
-static BOOL custom_sendAction(UIControl *self, SEL _cmd, SEL action, id target, id sender, UIEvent *event) {
-    NSString *actName = NSStringFromSelector(action);
-    NSString *tgtName = NSStringFromClass([target class]);
-    [gDriverVC appendLog:[NSString stringWithFormat:@"Action: [%@] on %@", actName, tgtName]];
-    
-    if ([actName.lowercaseString containsString:@"back"] || [actName.lowercaseString containsString:@"pop"] || [actName.lowercaseString containsString:@"close"] || [actName.lowercaseString containsString:@"dismiss"]) {
-        [gDriverVC hideHeader];
-    }
-    return orig_sendAction(self, _cmd, action, target, sender, event);
-}
-
-static void (*orig_willRemoveSubview)(id, SEL, UIView *);
-static void custom_willRemoveSubview(UIView *self, SEL _cmd, UIView *subview) {
-    orig_willRemoveSubview(self, _cmd, subview);
-    if (![NSStringFromClass([subview class]) containsString:@"Driver"]) {
-        NSString *sName = NSStringFromClass([subview class]);
-        if (subview.bounds.size.height > 400 || [sName containsString:@"Modal"] || [sName containsString:@"Sheet"]) {
-            [gDriverVC appendLog:[NSString stringWithFormat:@"Remove Subview: %@", sName]];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [gDriverVC checkAndHandleState];
-            });
-        }
-    }
-}
+#pragma mark - HOOK TOUCH EVENT
 
 static void (*orig_sendEvent)(id, SEL, UIEvent *);
 static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
@@ -506,16 +451,12 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
         for (UITouch *t in event.allTouches) {
             if (t.phase == UITouchPhaseEnded) {
                 CGPoint loc = [t locationInView:nil];
-                UIView *hitV = t.view;
-                NSString *vClass = NSStringFromClass([hitV class]);
-                NSString *accLabel = hitV.accessibilityLabel ?: @"";
-
-                [gDriverVC appendLog:[NSString stringWithFormat:@"TOUCH (%.0f, %.0f) | View: %@ | Acc: '%@'", loc.x, loc.y, vClass, accLabel]];
-
-                if (loc.x <= 90.0 && loc.y <= 110.0) {
+                // Chạm góc trên bên trái -> Đóng thanh cam
+                if (loc.x <= 85.0 && loc.y <= 105.0) {
                     [gDriverVC hideHeader];
                 }
 
+                // Kiểm tra chuyển đổi màn hình sau 0.25s
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [gDriverVC checkAndHandleState];
                 });
@@ -525,7 +466,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     }
 }
 
-#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (X: 0 -> 90, Y: 0 -> 110)
+#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (X: 0 -> 85, Y: 0 -> 105)
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -535,7 +476,7 @@ static void custom_sendEvent(UIApplication *self, SEL _cmd, UIEvent *event) {
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    if (point.x <= 90.0 && point.y <= 110.0) {
+    if (point.x <= 85.0 && point.y <= 105.0) {
         DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
         [vc hideHeader];
         return nil;
@@ -548,16 +489,6 @@ static DriverOverlayWindow *gDriverWin = nil;
 
 __attribute__((constructor))
 static void dylib_init(void) {
-    Class ctrlClass = [UIControl class];
-    Method mAction = class_getInstanceMethod(ctrlClass, @selector(sendAction:to:forEvent:));
-    orig_sendAction = (BOOL(*)(id, SEL, SEL, id, id, UIEvent *))method_getImplementation(mAction);
-    method_setImplementation(mAction, (IMP)custom_sendAction);
-
-    Class viewClass = [UIView class];
-    Method mRemove = class_getInstanceMethod(viewClass, @selector(willRemoveSubview:));
-    orig_willRemoveSubview = (void(*)(id, SEL, UIView *))method_getImplementation(mRemove);
-    method_setImplementation(mRemove, (IMP)custom_willRemoveSubview);
-
     Class appClass = [UIApplication class];
     Method mSend = class_getInstanceMethod(appClass, @selector(sendEvent:));
     orig_sendEvent = (void(*)(id, SEL, UIEvent *))method_getImplementation(mSend);
