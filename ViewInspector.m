@@ -1,12 +1,11 @@
 #import <UIKit/UIKit.h>
 #import <Vision/Vision.h>
-#import <objc/runtime.h>
 
 #pragma mark - DATA EXTRACTION ENGINE
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
-+ (BOOL)isOrderDetailPresent;
++ (void)checkHeaderTitle:(void(^)(BOOL isOrderDetail))completion;
 @end
 
 @implementation DriverDataExtractor
@@ -69,24 +68,52 @@
     return mainWin;
 }
 
-// Duyệt cây View tìm trực tiếp các thành phần đặc trưng của màn hình chi tiết đơn
-+ (BOOL)findDetailKeywordsInView:(UIView *)v {
-    if (!v) return NO;
-    if ([v isKindOfClass:[UILabel class]]) {
-        NSString *t = [(UILabel *)v text].lowercaseString;
-        if ([t containsString:@"mua hàng tại"] || [t containsString:@"giao đến địa chỉ"] || [t containsString:@"chi tiết đơn hàng"]) {
-            return YES;
-        }
+// Kiểm tra tiêu đề Navigation Bar ở trên cùng (Y: 44 -> 85)
++ (void)checkHeaderTitle:(void(^)(BOOL isOrderDetail))completion {
+    UIWindow *win = [self getMainAppWindow];
+    if (!win) {
+        if (completion) completion(NO);
+        return;
     }
-    for (UIView *sub in v.subviews) {
-        if ([self findDetailKeywordsInView:sub]) return YES;
-    }
-    return NO;
-}
 
-+ (BOOL)isOrderDetailPresent {
-    UIWindow *w = [self getMainAppWindow];
-    return [self findDetailKeywordsInView:w];
+    CGFloat sw = win.bounds.size.width;
+    CGRect headerCropRect = CGRectMake(48, 44, sw - 96, 40);
+
+    UIGraphicsBeginImageContextWithOptions(headerCropRect.size, NO, 0.0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGContextTranslateCTM(ctx, -headerCropRect.origin.x, -headerCropRect.origin.y);
+    [win.layer renderInContext:ctx];
+    UIImage *headerImg = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+
+    if (!headerImg || !headerImg.CGImage) {
+        if (completion) completion(NO);
+        return;
+    }
+
+    VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
+        BOOL isDetail = NO;
+        for (VNRecognizedTextObservation *obs in request.results) {
+            VNRecognizedText *top = [[obs topCandidates:1] firstObject];
+            if (top) {
+                NSString *txt = [top.string lowercaseString];
+                // Nếu tiêu đề KHÔNG PHẢI "đơn hàng" và có độ dài tên quán > 2 ký tự
+                if (![txt containsString:@"đơn hàng"] && ![txt containsString:@"các đơn"] && txt.length >= 2) {
+                    isDetail = YES;
+                    break;
+                }
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(isDetail);
+        });
+    }];
+
+    req.recognitionLevel = VNRequestTextRecognitionLevelFast;
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:headerImg.CGImage options:@{}];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [handler performRequests:@[req] error:nil];
+    });
 }
 
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion {
@@ -137,7 +164,7 @@
                 NSString *lower = [l lowercaseString];
                 CGRect boxI = [convertedBoxes[i] CGRectValue];
 
-                // 1. Quét SĐT ở mục "Mua hàng tại"
+                // 1. Bóc tách SĐT ở mục "Mua hàng tại"
                 if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"] || [lower containsString:@"cơm"]) {
                     NSArray *pList = [self extractPhonesFromText:l];
                     for (NSString *p in pList) {
@@ -198,7 +225,7 @@
                     }
                 }
 
-                // 4. Bóc tách Ghi chú (Gom nhiều dòng)
+                // 4. Bóc tách Ghi chú (nhiều dòng)
                 if ([lower containsString:@"ghi chú thêm"] || [lower containsString:@"dặn dò"]) {
                     NSMutableArray<NSString *> *noteLines = [NSMutableArray array];
                     for (NSUInteger k = i + 1; k < strings.count; k++) {
@@ -240,7 +267,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ NỀN CAM
+#pragma mark - UI LỚP PHỦ NỀN CAM (TỰ ĐỘNG BẬT/TẮT)
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -251,20 +278,17 @@
 @property (nonatomic, strong) UIImage *orderImageToSend;
 @property (nonatomic, strong) NSString *currentPhoneForZalo;
 @property (nonatomic, assign) BOOL isShowing;
-@property (nonatomic, strong) NSTimer *pollTimer;
+@property (nonatomic, strong) NSTimer *monitorTimer;
 
-- (void)startAutoMonitor;
+- (void)startHeaderMonitor;
 - (void)triggerExtraction;
 - (void)hideHeader;
 @end
-
-static DriverHelperVC *gDriverVC = nil;
 
 @implementation DriverHelperVC
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    gDriverVC = self;
     self.view.backgroundColor = [UIColor clearColor];
     CGFloat sw = [UIScreen mainScreen].bounds.size.width;
 
@@ -298,16 +322,16 @@ static DriverHelperVC *gDriverVC = nil;
     self.feeLabel.text = @"🛵 Ship: Đang tải... | 🎁 0đ";
     [self.orangeHeaderBar addSubview:self.feeLabel];
 
-    // Hàng 2 (Y = 67): Ghi chú (2 dòng)
+    // Hàng 2 (Y = 67): Ghi chú
     self.noteLabel = [[UILabel alloc] initWithFrame:CGRectMake(46, 67, sw - 128, 26)];
     self.noteLabel.textColor = [UIColor yellowColor];
     self.noteLabel.font = [UIFont boldSystemFontOfSize:10.5];
     self.noteLabel.numberOfLines = 2;
     self.noteLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.noteLabel.text = @"📌 Đang phân tích đơn hàng...";
+    self.noteLabel.text = @"📌 Đang phân tích đơn...";
     [self.orangeHeaderBar addSubview:self.noteLabel];
 
-    // Nút Gọi phụ (khi 2 SĐT)
+    // Nút Gọi phụ
     self.callSecondBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.callSecondBtn.frame = CGRectMake(sw - 78, 68, 72, 20);
     self.callSecondBtn.backgroundColor = [UIColor systemGreenColor];
@@ -318,26 +342,26 @@ static DriverHelperVC *gDriverVC = nil;
     [self.callSecondBtn addTarget:self action:@selector(makeCallSecond) forControlEvents:UIControlEventTouchUpInside];
     [self.orangeHeaderBar addSubview:self.callSecondBtn];
 
-    [self startAutoMonitor];
+    [self startHeaderMonitor];
 }
 
-// Polling kiểm tra trạng thái màn hình mỗi 0.4s (Cực kỳ nhẹ CPU, không tốn pin)
-- (void)startAutoMonitor {
-    self.pollTimer = [NSTimer scheduledTimerWithTimeInterval:0.4 target:self selector:@selector(checkScreenState) userInfo:nil repeats:YES];
-    [[NSRunLoop mainRunLoop] addTimer:self.pollTimer forMode:NSRunLoopCommonModes];
+- (void)startHeaderMonitor {
+    self.monitorTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 target:self selector:@selector(checkHeaderState) userInfo:nil repeats:YES];
+    [[NSRunLoop mainRunLoop] addTimer:self.monitorTimer forMode:NSRunLoopCommonModes];
 }
 
-- (void)checkScreenState {
-    BOOL isDetail = [DriverDataExtractor isOrderDetailPresent];
-    if (isDetail) {
-        if (!self.isShowing) {
-            [self triggerExtraction];
+- (void)checkHeaderState {
+    [DriverDataExtractor checkHeaderTitle:^(BOOL isOrderDetail) {
+        if (isOrderDetail) {
+            if (!self.isShowing) {
+                [self triggerExtraction];
+            }
+        } else {
+            if (self.isShowing) {
+                [self hideHeader];
+            }
         }
-    } else {
-        if (self.isShowing) {
-            [self hideHeader];
-        }
-    }
+    }];
 }
 
 - (void)triggerExtraction {
