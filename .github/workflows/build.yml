@@ -22,16 +22,35 @@ jobs:
         run: |
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           
+          # Tự động tìm vị trí thực tế của các file trong repo
+          DRIVER_M=$(find . -name "DriverHelper.m" -not -path "*/.*" | head -n 1)
+          FISHHOOK_C=$(find . -name "fishhook.c" -not -path "*/.*" | head -n 1)
+          FISHHOOK_H_DIR=$(find . -name "fishhook.h" -not -path "*/.*" -exec dirname {} \; | head -n 1)
+
+          if [ -z "$DRIVER_M" ]; then
+            echo "::error::Khong tim thay file DriverHelper.m trong repo! Vui long kiem tra ten file."
+            exit 1
+          fi
+
+          if [ -z "$FISHHOOK_C" ]; then
+            echo "::error::Khong tim thay file fishhook.c trong repo! Vui long kiem tra ten file."
+            exit 1
+          fi
+
+          echo "Found DriverHelper.m at: $DRIVER_M"
+          echo "Found fishhook.c at: $FISHHOOK_C"
+
           clang -isysroot "${SDK_PATH}" \
                 -arch arm64 \
                 -miphoneos-version-min=14.0 \
                 -shared \
                 -fobjc-arc \
+                -I"${FISHHOOK_H_DIR}" \
                 -framework UIKit \
                 -framework Foundation \
                 -framework CoreFoundation \
                 -framework CoreGraphics \
-                DriverHelper.m fishhook.c \
+                "${DRIVER_M}" "${FISHHOOK_C}" \
                 -o DriverHelper.dylib
 
       - name: Verify Dylib Architecture
