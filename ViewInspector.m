@@ -5,7 +5,7 @@
 
 @interface DriverDataExtractor : NSObject
 + (void)expandSheetAndExtract:(void(^)(NSString *shipFee, NSString *bonusFee, NSString *note, NSString *randomSecondPhone, UIImage *croppedOrderImage))completion;
-+ (void)checkHeaderTitle:(void(^)(BOOL isOrderDetail))completion;
++ (void)detectCurrentScreenHeader:(void(^)(BOOL isMainScreen, BOOL isOrderDetail))completion;
 @end
 
 @implementation DriverDataExtractor
@@ -68,16 +68,16 @@
     return mainWin;
 }
 
-// Kiểm tra tiêu đề Navigation Bar ở trên cùng (Y: 44 -> 85)
-+ (void)checkHeaderTitle:(void(^)(BOOL isOrderDetail))completion {
+// Kiểm tra chữ trên dải cam trên cùng
++ (void)detectCurrentScreenHeader:(void(^)(BOOL isMainScreen, BOOL isOrderDetail))completion {
     UIWindow *win = [self getMainAppWindow];
     if (!win) {
-        if (completion) completion(NO);
+        if (completion) completion(NO, NO);
         return;
     }
 
     CGFloat sw = win.bounds.size.width;
-    CGRect headerCropRect = CGRectMake(48, 44, sw - 96, 40);
+    CGRect headerCropRect = CGRectMake(35, 42, sw - 70, 48);
 
     UIGraphicsBeginImageContextWithOptions(headerCropRect.size, NO, 0.0);
     CGContextRef ctx = UIGraphicsGetCurrentContext();
@@ -87,25 +87,32 @@
     UIGraphicsEndImageContext();
 
     if (!headerImg || !headerImg.CGImage) {
-        if (completion) completion(NO);
+        if (completion) completion(NO, NO);
         return;
     }
 
     VNRecognizeTextRequest *req = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest * _Nonnull request, NSError * _Nullable error) {
+        BOOL isMain = NO;
         BOOL isDetail = NO;
+
         for (VNRecognizedTextObservation *obs in request.results) {
             VNRecognizedText *top = [[obs topCandidates:1] firstObject];
             if (top) {
                 NSString *txt = [top.string lowercaseString];
-                // Nếu tiêu đề KHÔNG PHẢI "đơn hàng" và có độ dài tên quán > 2 ký tự
-                if (![txt containsString:@"đơn hàng"] && ![txt containsString:@"các đơn"] && txt.length >= 2) {
-                    isDetail = YES;
+                
+                // Nếu xuất hiện chữ "Đơn hàng" -> Màn hình chính
+                if ([txt containsString:@"đơn hàng"] || [txt containsString:@"don hang"] || [txt containsString:@"các đơn"]) {
+                    isMain = YES;
                     break;
+                } else if (txt.length >= 2) {
+                    // Nếu là tên quán bất kỳ khác chữ Đơn hàng -> Chi tiết đơn
+                    isDetail = YES;
                 }
             }
         }
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(isDetail);
+            if (completion) completion(isMain, isDetail);
         });
     }];
 
@@ -164,7 +171,7 @@
                 NSString *lower = [l lowercaseString];
                 CGRect boxI = [convertedBoxes[i] CGRectValue];
 
-                // 1. Bóc tách SĐT ở mục "Mua hàng tại"
+                // 1. Quét SĐT ở mục "Mua hàng tại"
                 if ([lower containsString:@"mua hàng tại"] || [lower containsString:@"bánh mì"] || [lower containsString:@"quán"] || [lower containsString:@"chảo"] || [lower containsString:@"sâm"] || [lower containsString:@"cơm"]) {
                     NSArray *pList = [self extractPhonesFromText:l];
                     for (NSString *p in pList) {
@@ -267,7 +274,7 @@
 
 @end
 
-#pragma mark - UI LỚP PHỦ NỀN CAM (TỰ ĐỘNG BẬT/TẮT)
+#pragma mark - UI LỚP PHỦ NỀN CAM (TỰ ĐỘNG THEO TIÊU ĐỀ)
 
 @interface DriverHelperVC : UIViewController
 @property (nonatomic, strong) UIView *orangeHeaderBar;
@@ -351,17 +358,14 @@
 }
 
 - (void)checkHeaderState {
-    [DriverDataExtractor checkHeaderTitle:^(BOOL isOrderDetail) {
-        if (isOrderDetail) {
-            if (!self.isShowing) {
+    // Chỉ kiểm tra khi thanh cam đang ẩn để tìm thời điểm mở đơn
+    if (!self.isShowing) {
+        [DriverDataExtractor detectCurrentScreenHeader:^(BOOL isMainScreen, BOOL isOrderDetail) {
+            if (isOrderDetail && !isMainScreen) {
                 [self triggerExtraction];
             }
-        } else {
-            if (self.isShowing) {
-                [self hideHeader];
-            }
-        }
-    }];
+        }];
+    }
 }
 
 - (void)triggerExtraction {
@@ -418,7 +422,7 @@
 
 @end
 
-#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK
+#pragma mark - ENTRY POINT & HIT-TEST ĐỤC LỖ NÚT BACK (TỰ ĐẨY VỀ ẨN KHI BẤM BACK)
 
 @interface DriverOverlayWindow : UIWindow
 @end
@@ -428,9 +432,12 @@
     UIView *hitView = [super hitTest:point withEvent:event];
     if (hitView == self.rootViewController.view) return nil;
 
-    // Đục lỗ góc trái (X: 0 -> 45, Y: 0 -> 75) cho nút Trở về (<)
+    // Khi người dùng bấm vào vùng nút Trở về (<) (X: 0 -> 45, Y: 0 -> 75)
     if (point.x <= 45.0 && point.y <= 75.0) {
-        return nil;
+        // Tự động thu gọn thanh cam ngay để trả về màn hình chính
+        DriverHelperVC *vc = (DriverHelperVC *)self.rootViewController;
+        [vc hideHeader];
+        return nil; // Cho phép touch xuyên xuống nút < của app gốc
     }
     return hitView;
 }
